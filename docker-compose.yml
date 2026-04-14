@@ -1,0 +1,59 @@
+services:
+  mariadb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${CONTAINER_NAME:-mariadb-client}
+    restart: unless-stopped
+    mem_limit: ${MEM_LIMIT:-3g}
+    mem_reservation: 512m
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TIMEZONE:-America/Caracas}
+      # Configuración de backups automáticos
+      BACKUP_ENABLED: ${BACKUP_ENABLED:-true}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_DIR: /backups
+      # Configuración de Wasabi S3
+      WASABI_UPLOAD_ENABLED: ${WASABI_UPLOAD_ENABLED:-true}
+      WASABI_ACCESS_KEY: ${WASABI_ACCESS_KEY}
+      WASABI_SECRET_KEY: ${WASABI_SECRET_KEY}
+      WASABI_BUCKET: ${WASABI_BUCKET}
+      WASABI_REGION: ${WASABI_REGION:-us-east-1}
+      WASABI_ENDPOINT: ${WASABI_ENDPOINT:-https://s3.us-east-1.wasabisys.com}
+      # Configuración del formato de nombre de backup
+      SERVER_NAME: ${SERVER_NAME:-servidor}
+      CLIENT_NAME: ${CLIENT_NAME:-cliente}
+      MYSQL_PORT_EXT: ${MYSQL_PORT:-3306}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d
+      - ./config/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+      - mariadb_backups:/backups
+    networks:
+      - mariadb_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  mariadb_data:
+    driver: local
+    name: ${VOLUME_NAME:-mariadb_client_data}
+  mariadb_backups:
+    driver: local
+    name: ${VOLUME_NAME_BACKUPS:-mariadb_client_backups}
+
+networks:
+  mariadb_network:
+    driver: bridge
+    name: ${NETWORK_NAME:-mariadb_client_network}
