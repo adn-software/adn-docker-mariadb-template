@@ -19,3 +19,8 @@ Thumbs.db
 
 
 backups/
+init/01-SISTEMASADN.sql
+init/02-GCREPORT.sql
+init/03-COMPONENTES.sql
+init/04-AUDITOR.sql
+init/05-ADN.sql

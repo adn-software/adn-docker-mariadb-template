@@ -12,9 +12,6 @@ docs/
 # Backups
 backups/
 
-# Scripts (no necesarios en el contenedor)
-scripts/
-
 # IDE
 .vscode/
 .idea/
