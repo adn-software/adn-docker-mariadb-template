@@ -30,13 +30,12 @@ COPY config/my.cnf /etc/mysql/conf.d/custom.cnf
 # Copiar scripts de inicialización
 COPY init/*.sql /docker-entrypoint-initdb.d/
 
-# Copiar scripts de backup
-COPY scripts/backup-all.sh /usr/local/bin/backup-all.sh
+# Copiar scripts esenciales
 COPY scripts/entrypoint.sh /usr/local/bin/custom-entrypoint.sh
+COPY scripts/backup-complete.sh /usr/local/bin/backup-complete.sh
+COPY scripts/health-check-complete.sh /usr/local/bin/health-check-complete.sh
 COPY scripts/wasabi-upload.sh /usr/local/bin/wasabi-upload.sh
-COPY scripts/check-repair.sh /usr/local/bin/check-repair.sh
-RUN chmod +x /usr/local/bin/backup-all.sh /usr/local/bin/custom-entrypoint.sh /usr/local/bin/wasabi-upload.sh /usr/local/bin/check-repair.sh
-
+RUN chmod +x /usr/local/bin/custom-entrypoint.sh /usr/local/bin/backup-complete.sh /usr/local/bin/health-check-complete.sh /usr/local/bin/wasabi-upload.sh
 
 # Exponer puerto
 EXPOSE 3306
@@ -45,5 +44,5 @@ EXPOSE 3306
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=30s \
   CMD mysqladmin ping -h localhost -u root -p${MYSQL_ROOT_PASSWORD} || exit 1
 
-# Comando por defecto para iniciar MariaDB
-CMD ["mysqld"]
+# Usar entrypoint personalizado que configura cron automáticamente
+ENTRYPOINT ["/usr/local/bin/custom-entrypoint.sh"]

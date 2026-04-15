@@ -83,7 +83,7 @@ configure_cron_in_container() {
     fi
     
     # Verificar que los scripts están instalados
-    if ! docker exec "$container" test -f /usr/local/bin/backup-notify.sh; then
+    if ! docker exec "$container" test -f /usr/local/bin/backup-complete.sh; then
         error "Scripts no instalados en este contenedor"
         info "Ejecuta primero: ./install-all.sh"
         return 1
@@ -98,14 +98,20 @@ configure_cron_in_container() {
         }
     fi
     
-    # Crear crontab
+    # Obtener zona horaria del contenedor o usar default
+    local tz=$(docker exec "$container" bash -c 'echo ${TZ:-America/Caracas}')
+    log "Zona horaria del contenedor: $tz"
+    
+    # Crear crontab con timezone
     log "Configurando crontab..."
-    docker exec "$container" bash -c "cat > /tmp/crontab.tmp << 'EOF'
-# Backup automático
-${BACKUP_TIME} source /etc/monitor.env && /usr/local/bin/backup-notify.sh ${DATABASE_NAME} >> /var/log/backup.log 2>&1
+    docker exec "$container" bash -c "export TZ='$tz'; export BACKUP_TIME='$BACKUP_TIME'; export HEALTH_TIME='$HEALTH_TIME'; cat > /tmp/crontab.tmp << EOF
+# Zona horaria configurada
+TZ=$tz
+# Backup automático completo (todas las BDs + Wasabi + Notificación)
+${BACKUP_TIME} /usr/local/bin/backup-complete.sh >> /var/log/backup.log 2>&1
 
-# Health check automático
-${HEALTH_TIME} source /etc/monitor.env && /usr/local/bin/health-check-notify.sh ${DATABASE_NAME} >> /var/log/health.log 2>&1
+# Health check automático completo (todas las BDs + Reparación + Notificación)
+${HEALTH_TIME} /usr/local/bin/health-check-complete.sh >> /var/log/health.log 2>&1
 EOF"
     
     # Instalar crontab

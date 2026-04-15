@@ -67,22 +67,27 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
 fi
 log "✓ Contenedor está corriendo"
 
-# Copiar scripts
+# Copiar scripts esenciales
 log "Copiando scripts al contenedor..."
-docker cp scripts/backup-notify.sh "${CONTAINER_NAME}:/usr/local/bin/" || {
-    error "Error al copiar backup-notify.sh"
+docker cp scripts/backup-complete.sh "${CONTAINER_NAME}:/usr/local/bin/" || {
+    error "Error al copiar backup-complete.sh"
     exit 1
 }
-docker cp scripts/health-check-notify.sh "${CONTAINER_NAME}:/usr/local/bin/" || {
-    error "Error al copiar health-check-notify.sh"
+docker cp scripts/health-check-complete.sh "${CONTAINER_NAME}:/usr/local/bin/" || {
+    error "Error al copiar health-check-complete.sh"
     exit 1
 }
-log "✓ Scripts copiados"
+docker cp scripts/wasabi-upload.sh "${CONTAINER_NAME}:/usr/local/bin/" || {
+    error "Error al copiar wasabi-upload.sh"
+    exit 1
+}
+log "✓ Scripts copiados (3 archivos)"
 
 # Dar permisos de ejecución
 log "Configurando permisos de ejecución..."
-docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/backup-notify.sh
-docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/health-check-notify.sh
+docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/backup-complete.sh
+docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/health-check-complete.sh
+docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/wasabi-upload.sh
 log "✓ Permisos configurados"
 
 # Crear directorio de backups
@@ -98,59 +103,23 @@ docker exec "$CONTAINER_NAME" touch /var/log/backup.log
 docker exec "$CONTAINER_NAME" touch /var/log/health.log
 log "✓ Directorio de logs creado"
 
-# Verificar si ya existe configuración
-if docker exec "$CONTAINER_NAME" test -f /etc/monitor.env; then
-    warning "Ya existe un archivo de configuración en /etc/monitor.env"
-    info "Se mantendrá la configuración existente"
-else
-    log "Creando archivo de configuración de ejemplo..."
-    docker exec "$CONTAINER_NAME" bash -c 'cat > /etc/monitor.env << EOF
-# Configuración del Sistema de Monitoreo ADN
-MONITOR_API_URL=https://api.adnsistemas.com/api/v1
-MONITOR_API_KEY=CAMBIAR_POR_TU_API_KEY
-MONITOR_SERVER_ID=CAMBIAR_POR_TU_SERVER_UUID
-MONITOR_DATABASE_ID=CAMBIAR_POR_TU_DATABASE_UUID
-
-# Configuración de Backups
-BACKUP_DIR=/backups
-BACKUP_RETENTION_DAYS=7
-
-# Configuración de MariaDB
-DB_HOST=localhost
-DB_PORT=3306
-
-# NOTA: MYSQL_ROOT_PASSWORD debe estar ya configurado en el contenedor
-EOF'
-    log "✓ Archivo de configuración creado en /etc/monitor.env"
-    warning "⚠ IMPORTANTE: Debes editar /etc/monitor.env con tus credenciales"
-fi
-
-# Configurar carga automática de variables
-log "Configurando carga automática de variables..."
-docker exec "$CONTAINER_NAME" bash -c 'grep -q "source /etc/monitor.env" /root/.bashrc || echo "source /etc/monitor.env" >> /root/.bashrc'
-log "✓ Variables se cargarán automáticamente"
-
 log "════════════════════════════════════════════════"
 log "✓ INSTALACIÓN COMPLETADA"
 log "════════════════════════════════════════════════"
 echo ""
 info "Próximos pasos:"
 echo ""
-echo "1. Editar configuración:"
-echo "   docker exec -it $CONTAINER_NAME nano /etc/monitor.env"
+echo "1. Verificar variables de entorno en docker-compose.yml:"
+echo "   - MONITOR_API_KEY"
+echo "   - MONITOR_SERVER_ID"
+echo "   - MONITOR_DATABASE_ID"
 echo ""
 echo "2. Probar backup manualmente:"
-echo "   docker exec -it $CONTAINER_NAME bash"
-echo "   source /etc/monitor.env"
-echo "   /usr/local/bin/backup-notify.sh <nombre_base_datos>"
+echo "   docker exec -it $CONTAINER_NAME /usr/local/bin/backup-complete.sh"
 echo ""
 echo "3. Probar health check manualmente:"
-echo "   docker exec -it $CONTAINER_NAME bash"
-echo "   source /etc/monitor.env"
-echo "   /usr/local/bin/health-check-notify.sh <nombre_base_datos>"
+echo "   docker exec -it $CONTAINER_NAME /usr/local/bin/health-check-complete.sh"
 echo ""
-echo "4. Configurar cron (después de probar):"
-echo "   Ver instrucciones en INSTALACION.md"
-echo ""
-warning "⚠ RECUERDA: Edita /etc/monitor.env con tus credenciales antes de ejecutar los scripts"
+echo "4. Configurar cron (opcional, si no usas entrypoint automático):"
+echo "   ./scripts/configure-cron.sh <nombre_bd>"
 echo ""

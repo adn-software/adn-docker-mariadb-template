@@ -67,25 +67,19 @@ update_scripts_in_container() {
     fi
     
     if [ "$DRY_RUN" = true ]; then
-        info "[DRY-RUN] Se actualizarían 6 scripts en $container"
+        info "[DRY-RUN] Se actualizarían 3 scripts en $container"
         return 0
     fi
     
-    # Copiar scripts actualizados
-    docker cp scripts/backup-notify.sh "${container}:/usr/local/bin/" || return 1
-    docker cp scripts/health-check-notify.sh "${container}:/usr/local/bin/" || return 1
-    docker cp scripts/backup-all.sh "${container}:/usr/local/bin/" || return 1
+    # Copiar scripts esenciales
+    docker cp scripts/backup-complete.sh "${container}:/usr/local/bin/" || return 1
+    docker cp scripts/health-check-complete.sh "${container}:/usr/local/bin/" || return 1
     docker cp scripts/wasabi-upload.sh "${container}:/usr/local/bin/" || return 1
-    docker cp scripts/check-repair.sh "${container}:/usr/local/bin/" || return 1
-    docker cp scripts/restore.sh "${container}:/usr/local/bin/" || return 1
     
     # Asegurar permisos
-    docker exec "$container" chmod +x /usr/local/bin/backup-notify.sh
-    docker exec "$container" chmod +x /usr/local/bin/health-check-notify.sh
-    docker exec "$container" chmod +x /usr/local/bin/backup-all.sh
+    docker exec "$container" chmod +x /usr/local/bin/backup-complete.sh
+    docker exec "$container" chmod +x /usr/local/bin/health-check-complete.sh
     docker exec "$container" chmod +x /usr/local/bin/wasabi-upload.sh
-    docker exec "$container" chmod +x /usr/local/bin/check-repair.sh
-    docker exec "$container" chmod +x /usr/local/bin/restore.sh
     
     success "✓ Scripts actualizados en: $container"
     return 0

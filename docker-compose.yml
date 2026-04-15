@@ -17,6 +17,9 @@ services:
       BACKUP_ENABLED: ${BACKUP_ENABLED:-true}
       BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      # Configuración de health check automático
+      HEALTH_CHECK_ENABLED: ${HEALTH_CHECK_ENABLED:-true}
+      HEALTH_SCHEDULE: ${HEALTH_SCHEDULE:-0 */6 * * *}
       BACKUP_DIR: /backups
       # Configuración de Wasabi S3
       WASABI_UPLOAD_ENABLED: ${WASABI_UPLOAD_ENABLED:-true}
@@ -29,6 +32,11 @@ services:
       SERVER_NAME: ${SERVER_NAME:-servidor}
       CLIENT_NAME: ${CLIENT_NAME:-cliente}
       MYSQL_PORT_EXT: ${MYSQL_PORT:-3306}
+      # Configuración del sistema de monitoreo ADN
+      MONITOR_API_URL: ${MONITOR_API_URL:-https://qa.sm.apps-adn.com/api/v1}
+      MONITOR_API_KEY: ${MONITOR_API_KEY}
+      MONITOR_SERVER_ID: ${MONITOR_SERVER_ID}
+      MONITOR_DATABASE_ID: ${MONITOR_DATABASE_ID}
     ports:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:

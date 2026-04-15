@@ -93,7 +93,7 @@ install_in_container() {
     
     # Verificar si ya está instalado
     if [ "$FORCE_INSTALL" = false ]; then
-        if docker exec "$container" test -f /usr/local/bin/backup-notify.sh 2>/dev/null; then
+        if docker exec "$container" test -f /usr/local/bin/backup-complete.sh 2>/dev/null; then
             info "Scripts ya instalados en este contenedor"
             read -p "¿Actualizar de todas formas? (s/n): " -n 1 -r
             echo
@@ -106,30 +106,22 @@ install_in_container() {
     
     if [ "$DRY_RUN" = true ]; then
         info "[DRY-RUN] Se copiarían los siguientes scripts:"
-        info "  - backup-notify.sh"
-        info "  - health-check-notify.sh"
-        info "  - backup-all.sh"
+        info "  - backup-complete.sh"
+        info "  - health-check-complete.sh"
         info "  - wasabi-upload.sh"
-        info "  - check-repair.sh"
-        info "  - restore.sh"
         return 0
     fi
     
-    # 1. Copiar TODOS los scripts necesarios
+    # 1. Copiar scripts esenciales
     log "Copiando scripts al contenedor..."
     
-    docker cp scripts/backup-notify.sh "${container}:/usr/local/bin/" || {
-        error "Error al copiar backup-notify.sh"
+    docker cp scripts/backup-complete.sh "${container}:/usr/local/bin/" || {
+        error "Error al copiar backup-complete.sh"
         return 1
     }
     
-    docker cp scripts/health-check-notify.sh "${container}:/usr/local/bin/" || {
-        error "Error al copiar health-check-notify.sh"
-        return 1
-    }
-    
-    docker cp scripts/backup-all.sh "${container}:/usr/local/bin/" || {
-        error "Error al copiar backup-all.sh"
+    docker cp scripts/health-check-complete.sh "${container}:/usr/local/bin/" || {
+        error "Error al copiar health-check-complete.sh"
         return 1
     }
     
@@ -138,26 +130,13 @@ install_in_container() {
         return 1
     }
     
-    docker cp scripts/check-repair.sh "${container}:/usr/local/bin/" || {
-        error "Error al copiar check-repair.sh"
-        return 1
-    }
-    
-    docker cp scripts/restore.sh "${container}:/usr/local/bin/" || {
-        error "Error al copiar restore.sh"
-        return 1
-    }
-    
-    log "✓ Scripts copiados (6 archivos)"
+    log "✓ Scripts copiados (3 archivos)"
     
     # 2. Dar permisos de ejecución
     log "Configurando permisos de ejecución..."
-    docker exec "$container" chmod +x /usr/local/bin/backup-notify.sh
-    docker exec "$container" chmod +x /usr/local/bin/health-check-notify.sh
-    docker exec "$container" chmod +x /usr/local/bin/backup-all.sh
+    docker exec "$container" chmod +x /usr/local/bin/backup-complete.sh
+    docker exec "$container" chmod +x /usr/local/bin/health-check-complete.sh
     docker exec "$container" chmod +x /usr/local/bin/wasabi-upload.sh
-    docker exec "$container" chmod +x /usr/local/bin/check-repair.sh
-    docker exec "$container" chmod +x /usr/local/bin/restore.sh
     log "✓ Permisos configurados"
     
     # 3. Crear directorios necesarios
@@ -194,35 +173,6 @@ install_in_container() {
     fi
     
     log "✓ Dependencias verificadas"
-    
-    # 5. Verificar si existe archivo de configuración
-    if docker exec "$container" test -f /etc/monitor.env 2>/dev/null; then
-        info "Archivo de configuración ya existe: /etc/monitor.env"
-    else
-        log "Creando archivo de configuración de ejemplo..."
-        docker exec "$container" bash -c 'cat > /etc/monitor.env << EOF
-# Configuración del Sistema de Monitoreo ADN
-MONITOR_API_URL=https://api.adnsistemas.com/api/v1
-MONITOR_API_KEY=CAMBIAR_POR_TU_API_KEY
-MONITOR_SERVER_ID=CAMBIAR_POR_TU_SERVER_UUID
-MONITOR_DATABASE_ID=CAMBIAR_POR_TU_DATABASE_UUID
-
-# Configuración de Backups
-BACKUP_DIR=/backups
-BACKUP_RETENTION_DAYS=7
-
-# Configuración de MariaDB
-DB_HOST=localhost
-DB_PORT=3306
-EOF'
-        log "✓ Archivo de configuración creado"
-        warning "⚠ Debes editar /etc/monitor.env en el contenedor con las credenciales correctas"
-    fi
-    
-    # 6. Configurar carga automática de variables
-    log "Configurando carga automática de variables..."
-    docker exec "$container" bash -c 'grep -q "source /etc/monitor.env" /root/.bashrc 2>/dev/null || echo "source /etc/monitor.env" >> /root/.bashrc'
-    log "✓ Variables se cargarán automáticamente"
     
     success "✓ Instalación completada en: $container"
     
@@ -337,13 +287,16 @@ log "═════════════════════════
 
 echo ""
 info "Próximos pasos:"
-echo "1. Configurar credenciales en cada contenedor:"
-echo "   docker exec -it <contenedor> nano /etc/monitor.env"
+echo "1. Verificar variables de entorno en docker-compose.yml:"
+echo "   - MONITOR_API_KEY"
+echo "   - MONITOR_SERVER_ID"
+echo "   - MONITOR_DATABASE_ID"
 echo ""
 echo "2. Probar backup manualmente:"
-echo "   docker exec -it <contenedor> bash -c 'source /etc/monitor.env && /usr/local/bin/backup-notify.sh <nombre_bd>'"
+echo "   docker exec -it <contenedor> /usr/local/bin/backup-complete.sh"
 echo ""
-echo "3. Configurar cron para ejecución automática (ver documentación)"
+echo "3. Probar health check manualmente:"
+echo "   docker exec -it <contenedor> /usr/local/bin/health-check-complete.sh"
 echo ""
 
 if [ "$DRY_RUN" = true ]; then
