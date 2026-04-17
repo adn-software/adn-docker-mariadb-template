@@ -7,38 +7,43 @@ Esta guía explica cómo configurar los contenedores MariaDB para que ejecuten a
 ## 📋 Arquitectura del Sistema
 
 ```
-Servidor Netcup (/home/adn/)
-├── adn-monitor-db-scripts/          ← Repo clonado (git pull para actualizar)
-│   ├── scripts/                     ← Scripts que se copian a contenedores
-│   ├── install-all.sh               ← Instalación masiva
-│   ├── update-scripts.sh            ← Actualización rápida
-│   └── configure-cron.sh            ← Configurar cron en todos
-│
-└── Contenedores MariaDB (40-70 por servidor)
-    ├── mariadb-3330-cliente1/
-    ├── mariadb-3331-cliente2/
-    └── ...
-    
-    Cada contenedor tiene:
-    ├── /usr/local/bin/
-    │   ├── backup-notify.sh         ← Scripts copiados
-    │   ├── health-check-notify.sh
-    │   ├── backup-all.sh
-    │   ├── wasabi-upload.sh
-    │   ├── check-repair.sh
-    │   └── restore.sh
-    ├── /etc/monitor.env             ← Configuración del sistema
-    ├── /backups/                    ← Backups locales
-    └── /var/log/
-        ├── backup.log
-        └── health.log
+adn-docker-mariadb-template/         ← Plantilla Docker (este repositorio)
+├── scripts/                         ← Scripts embebidos en la imagen
+│   ├── entrypoint.sh                ← Configura cron al iniciar
+│   ├── backup-complete.sh           ← Backup completo + Wasabi + Notificación
+│   ├── health-check-complete.sh     ← Health check + Reparación + Notificación
+│   ├── wasabi-upload.sh             ← Upload a Wasabi S3
+│   └── deploy-update.sh             ← Actualización masiva de contenedores
+├── Dockerfile                       ← Construye imagen con scripts incluidos
+└── docker-compose.yml               ← Orquesta el contenedor
+
+Servidor Netcup (/var/docker-data/mariadb/)
+├── mariadb-3330-cliente1/           ← Contenedor basado en la plantilla
+│   ├── Dockerfile                   ← Copiado de la plantilla
+│   ├── docker-compose.yml           ← Configuración específica
+│   ├── .env                         ← Variables de entorno (BACKUP_ENABLED, etc.)
+│   └── ...
+├── mariadb-3331-cliente2/
+└── ...
+
+Dentro de cada contenedor:
+├── /usr/local/bin/
+│   ├── backup-complete.sh           ← Script completo de backup
+│   ├── health-check-complete.sh     ← Script completo de health check
+│   ├── wasabi-upload.sh             ← Upload a Wasabi
+│   └── custom-entrypoint.sh         ← Entrypoint con soporte cron
+├── /etc/monitor.env                 ← Configuración del sistema ADN
+├── /backups/                        ← Backups locales
+└── /var/log/
+    ├── backup.log
+    └── health.log
 ```
 
 ---
 
 ## 🚀 Instalación Inicial (Una sola vez por servidor)
 
-### Paso 1: Clonar el repositorio en el servidor Netcup
+### Paso 1: Clonar la plantilla en el servidor Netcup
 
 ```bash
 # SSH al servidor Netcup
@@ -47,160 +52,248 @@ ssh root@servidor-netcup.com
 # Ir a /home/adn
 cd /home/adn
 
-# Clonar el repositorio
-git clone https://github.com/tu-org/adn-monitor-db-scripts.git
+# Clonar la plantilla
+git clone https://github.com/adn-software/adn-docker-mariadb-template.git
 
 # Entrar al directorio
-cd adn-monitor-db-scripts
+cd adn-docker-mariadb-template
 
 # Dar permisos de ejecución a los scripts
-chmod +x *.sh
+chmod +x scripts/*.sh
 ```
 
-### Paso 2: Instalar scripts en TODOS los contenedores
+### Paso 2: Crear contenedores desde la plantilla
+
+Cada contenedor se crea copiando la plantilla y configurando su `.env`:
 
 ```bash
-# Instalación masiva (primera vez)
-./install-all.sh
+# Ejemplo: Crear un nuevo contenedor para cliente1 en puerto 3309
+mkdir -p /var/docker-data/mariadb/mariadb-3309-cliente1
+cd /var/docker-data/mariadb/mariadb-3309-cliente1
 
-# O con dry-run para ver qué haría
-./install-all.sh --dry-run
+# Copiar archivos de la plantilla
+cp /home/adn/adn-docker-mariadb-template/Dockerfile .
+cp /home/adn/adn-docker-mariadb-template/docker-compose.yml .
+cp /home/adn/adn-docker-mariadb-template/.env.example .env
 
-# Forzar reinstalación en todos
-./install-all.sh --force
+# Editar configuración
+nano .env
 ```
 
-**Esto instalará:**
-- ✅ 6 scripts en `/usr/local/bin/` de cada contenedor
+**Configurar en `.env`:**
+```env
+# Configuración del contenedor
+CONTAINER_NAME=mariadb-3309-cliente1
+MYSQL_PORT=3309
+MYSQL_ROOT_PASSWORD=password_seguro
+MYSQL_DATABASE=sistemasadn
+
+# Configuración de monitoreo (ver sección Configuración)
+MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
+MONITOR_API_KEY=sk_live_TU_API_KEY
+MONITOR_SERVER_ID=550e8400-e29b-41d4-a716-446655440000
+
+# Para múltiples bases de datos, usa DBID_<nombre>:
+DBID_sistemasadn=660e8400-e29b-41d4-a716-446655440001
+DBID_otrabase=660e8400-e29b-41d4-a716-446655440002
+
+# Habilitar automatizaciones
+BACKUP_ENABLED=true
+BACKUP_SCHEDULE=0 2 * * *
+HEALTH_CHECK_ENABLED=true
+HEALTH_SCHEDULE=0 */6 * * *
+```
+
+### Paso 3: Iniciar el contenedor
+
+```bash
+# Construir e iniciar
+docker compose up -d
+
+# Ver logs
+docker compose logs -f
+```
+
+**Esto creará automáticamente:**
+- ✅ Contenedor MariaDB con scripts embebidos
+- ✅ Cron configurado según las variables de entorno
 - ✅ Directorios `/backups/` y `/var/log/`
-- ✅ Dependencias (curl, bc)
-- ✅ Archivo de configuración `/etc/monitor.env` (plantilla)
+- ✅ Scripts listos en `/usr/local/bin/`
 
 ---
 
 ## ⚙️ Configuración por Contenedor
 
+Las variables de monitoreo se pasan **automáticamente** desde el archivo `.env` del contenedor, a través de `docker-compose.yml`, como variables de entorno. **No es necesario editar nada dentro del contenedor.**
+
 ### Opción A: Configuración Manual (Recomendado para pocos contenedores)
 
 ```bash
-# Editar configuración en cada contenedor
-docker exec -it mariadb-3330-cliente1 nano /etc/monitor.env
+# Ir al directorio del contenedor
+cd /var/docker-data/mariadb/mariadb-3309-cliente1
 
-# Cambiar estos valores:
-MONITOR_API_URL=https://api.adnsistemas.com/api/v1
-MONITOR_API_KEY=sk_live_abc123...
-MONITOR_SERVER_ID=uuid-del-servidor
-MONITOR_DATABASE_ID=uuid-de-la-base-datos
+# Editar el archivo .env (variables se pasan automáticamente al contenedor)
+nano .env
+```
+
+**Configurar en `.env`:**
+```env
+# Monitoreo (obtenidos del sistema backup-manager)
+MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
+MONITOR_API_KEY=sk_live_abc123xyz...
+MONITOR_SERVER_ID=550e8400-e29b-41d4-a716-446655440000
+
+# Database IDs usando formato DBID_<nombre_bd>=<uuid>
+# Estas variables se pasan automáticamente al contenedor
+DBID_sistemasadn=660e8400-e29b-41d4-a716-446655440001
+
+# Habilitar automatizaciones
+BACKUP_ENABLED=true
+BACKUP_SCHEDULE=0 2 * * *
+HEALTH_CHECK_ENABLED=true
+HEALTH_SCHEDULE=0 */6 * * *
+```
+
+```bash
+# Reiniciar contenedor para aplicar cambios
+docker compose restart
 ```
 
 ### Opción B: Configuración Masiva con Script (Para muchos contenedores)
 
-Crea un script de configuración masiva:
+Crea un script que edite los archivos `.env` de cada contenedor:
 
 ```bash
-# Crear archivo de configuración masiva
 nano configure-all-containers.sh
 ```
 
 ```bash
 #!/bin/bash
 
-# Mapeo de contenedores a sus credenciales
-# Formato: CONTAINER_NAME:DATABASE_ID:DATABASE_NAME
+# Credenciales del servidor (mismo Server ID y API Key para todos)
+SERVER_ID="550e8400-e29b-41d4-a716-446655440000"
+API_KEY="sk_live_abc123..."
+API_URL="https://qa.sm-api.apps-adn.com/api"
 
-declare -A CONTAINER_CONFIG=(
-    ["mariadb-3330-cliente1"]="db-uuid-1:sistemasadn"
-    ["mariadb-3331-cliente2"]="db-uuid-2:appdb"
-    ["mariadb-3332-cliente3"]="db-uuid-3:production"
-    # ... agregar todos los contenedores
+# Mapeo de contenedores: Puerto:DatabaseID:DatabaseName
+# Obtener estos IDs del sistema backup-manager tras sincronizar
+CONTAINERS=(
+    "3309:660e8400-e29b-41d4-a716-446655440001:sistemasadn"
+    "3310:660e8400-e29b-41d4-a716-446655440002:appdb"
+    "3311:660e8400-e29b-41d4-a716-446655440003:production"
 )
 
-# Server ID y API Key son los mismos para todos en este servidor
-SERVER_ID="server-uuid-netcup-1"
-API_KEY="sk_live_abc123..."
-API_URL="https://api.adnsistemas.com/api/v1"
-
-for container in "${!CONTAINER_CONFIG[@]}"; do
-    IFS=':' read -r db_id db_name <<< "${CONTAINER_CONFIG[$container]}"
+for mapping in "${CONTAINERS[@]}"; do
+    IFS=':' read -r port db_id db_name <<< "$mapping"
+    container_dir="/var/docker-data/mariadb/mariadb-${port}-cliente"
     
-    echo "Configurando $container..."
+    echo "Configurando contenedor en puerto $port..."
     
-    docker exec "$container" bash -c "cat > /etc/monitor.env << EOF
-MONITOR_API_URL=$API_URL
-MONITOR_API_KEY=$API_KEY
-MONITOR_SERVER_ID=$SERVER_ID
-MONITOR_DATABASE_ID=$db_id
-BACKUP_DIR=/backups
-BACKUP_RETENTION_DAYS=7
-DB_HOST=localhost
-DB_PORT=3306
-EOF"
-    
-    echo "✓ $container configurado"
+    if [ -f "$container_dir/.env" ]; then
+        # Actualizar variables de monitoreo en .env
+        sed -i "s|^MONITOR_API_URL=.*|MONITOR_API_URL=$API_URL|" "$container_dir/.env"
+        sed -i "s|^MONITOR_API_KEY=.*|MONITOR_API_KEY=$API_KEY|" "$container_dir/.env"
+        sed -i "s|^MONITOR_SERVER_ID=.*|MONITOR_SERVER_ID=$SERVER_ID|" "$container_dir/.env"
+        
+        # Agregar/actualizar DBID
+        if grep -q "DBID_${db_name}=" "$container_dir/.env"; then
+            sed -i "s|^DBID_${db_name}=.*|DBID_${db_name}=${db_id}|" "$container_dir/.env"
+        else
+            echo "DBID_${db_name}=${db_id}" >> "$container_dir/.env"
+        fi
+        
+        echo "  ✓ $container_dir configurado"
+    else
+        echo "  ✗ .env no encontrado en $container_dir"
+    fi
 done
+
+echo ""
+echo "⚠️  IMPORTANTE: Para aplicar cambios, reiniciar los contenedores:"
+echo "   cd /var/docker-data/mariadb && docker compose -f */docker-compose.yml restart"
 ```
 
 ---
 
 ## 🕐 Configurar Ejecución Automática (Cron)
 
-### Opción 1: Configurar cron en todos los contenedores
+**⚠️ IMPORTANTE:** El cron se configura **automáticamente** al iniciar el contenedor mediante el `entrypoint.sh`. Solo necesitas configurar las variables en el `.env` del contenedor.
+
+### Configuración Automática (Recomendado)
+
+Edita el `.env` de cada contenedor:
 
 ```bash
-# Configurar cron para backup a las 2 AM y health check a las 8 AM
-./configure-cron.sh sistemasadn
-
-# O personalizar horarios
-./configure-cron.sh mydb --backup-time "0 3 * * *" --health-time "0 9 * * *"
+# En el directorio del contenedor
+nano .env
 ```
 
-### Opción 2: Configurar cron manualmente en un contenedor
+```env
+# Habilitar automatizaciones
+BACKUP_ENABLED=true
+BACKUP_SCHEDULE=0 2 * * *        # 2:00 AM todos los días
+
+HEALTH_CHECK_ENABLED=true
+HEALTH_SCHEDULE=0 */6 * * *      # Cada 6 horas
+
+# Zona horaria
+TIMEZONE=America/Caracas
+```
+
+Luego reinicia el contenedor para aplicar:
+
+```bash
+docker compose restart
+```
+
+**El entrypoint configurará automáticamente:**
+- ✅ Cron daemon iniciado
+- ✅ Jobs programados según las variables
+- ✅ Logs en `/var/log/backup.log` y `/var/log/health.log`
+- ✅ Zona horaria correcta
+
+### Verificar Configuración de Cron
 
 ```bash
 # Entrar al contenedor
-docker exec -it mariadb-3330-cliente1 bash
+docker exec -it mariadb-3309-cliente1 bash
 
-# Instalar cron si no está
-apt-get update && apt-get install -y cron
-service cron start
+# Ver crontab actual
+crontab -l
 
-# Editar crontab
-crontab -e
+# Ver logs de backup
+tail -f /var/log/backup.log
 
-# Agregar:
-0 2 * * * source /etc/monitor.env && /usr/local/bin/backup-notify.sh sistemasadn >> /var/log/backup.log 2>&1
-0 8 * * * source /etc/monitor.env && /usr/local/bin/health-check-notify.sh sistemasadn >> /var/log/health.log 2>&1
-
-# Salir
-exit
+# Ver logs de health check
+tail -f /var/log/health.log
 ```
 
 ---
 
-## 🔄 Actualización de Scripts (Después de git pull)
+## 🔄 Actualización Masiva de Contenedores
 
-Cuando hagas cambios en el repositorio y hagas `git pull`:
+Cuando hayas mejorado la plantilla y quieras actualizar TODOS los contenedores existentes:
 
 ```bash
-# En el servidor Netcup
-cd /home/adn/adn-monitor-db-scripts
+# En el directorio de la plantilla
+cd /home/adn/adn-docker-mariadb-template
 
 # Actualizar repositorio
 git pull origin main
 
-# Actualizar scripts en TODOS los contenedores (solo copia scripts, no toca config)
-./update-scripts.sh
+# Actualizar TODOS los contenedores del servidor
+./scripts/deploy-update.sh
 
-# O con dry-run para ver qué haría
-./update-scripts.sh --dry-run
+# O actualizar solo uno específico
+./scripts/deploy-update.sh 3309-cliente1
 ```
 
-**Esto actualiza SOLO los scripts, NO toca:**
-- ❌ Configuración (`/etc/monitor.env`)
-- ❌ Cron jobs
-- ❌ Logs
-- ❌ Backups
-
+**Esto hará:**
+- ✅ Backup de seguridad del contenedor antes de actualizar
+- ✅ Actualiza `Dockerfile`, `docker-compose.yml`, y carpeta `scripts/`
+- ✅ Reconstruye la imagen con los nuevos scripts
+- ✅ Reinicia el contenedor (cron se reconfigura automáticamente)
+- ✅ **NO toca** los datos de MySQL ni el archivo `.env`
 ---
 
 ## 🧪 Pruebas Manuales
@@ -208,13 +301,18 @@ git pull origin main
 ### Probar backup en un contenedor
 
 ```bash
-docker exec -it mariadb-3330-cliente1 bash -c "source /etc/monitor.env && /usr/local/bin/backup-notify.sh sistemasadn"
+# Ejecutar backup completo (todas las BDs + Wasabi + Notificación)
+docker exec mariadb-3309-cliente1 /usr/local/bin/backup-complete.sh
+
+# O para una BD específica (sin notificación)
+docker exec mariadb-3309-cliente1 /usr/local/bin/backup-complete.sh sistemasadn
 ```
 
 ### Probar health check en un contenedor
 
 ```bash
-docker exec -it mariadb-3330-cliente1 bash -c "source /etc/monitor.env && /usr/local/bin/health-check-notify.sh sistemasadn"
+# Ejecutar health check completo (todas las BDs + Reparación + Notificación)
+docker exec mariadb-3309-cliente1 /usr/local/bin/health-check-complete.sh
 ```
 
 ### Ver logs
@@ -351,36 +449,45 @@ git pull origin main
 ### Scripts no se ejecutan automáticamente
 
 ```bash
-# Verificar que cron está corriendo
-docker exec <contenedor> service cron status
+# Verificar que cron está corriendo (se inicia automáticamente en entrypoint)
+docker exec <contenedor> pgrep cron
 
-# Reiniciar cron
-docker exec <contenedor> service cron restart
+# Si no está corriendo, reiniciar el contenedor
+docker compose restart
 
-# Ver crontab
+# Ver crontab configurado
 docker exec <contenedor> crontab -l
+
+# Ver logs del entrypoint
+docker compose logs | grep -i cron
 ```
 
 ### Variables de entorno no se cargan
 
 ```bash
-# Verificar que existe /etc/monitor.env
-docker exec <contenedor> cat /etc/monitor.env
+# Verificar variables en el contenedor
+docker exec <contenedor> env | grep -E "(MONITOR_|DBID_)"
 
-# Verificar que se carga en .bashrc
-docker exec <contenedor> grep "monitor.env" /root/.bashrc
+# Verificar que el .env del host tiene las variables
+cat /var/docker-data/mariadb/<nombre>/.env | grep -E "(MONITOR_|DBID_)"
+
+# Recargar variables reiniciando el contenedor
+docker compose restart
 ```
+
+**Nota:** Las variables se definen en el archivo `.env` del directorio del contenedor (en el host), y `docker-compose.yml` las pasa automáticamente como variables de entorno al contenedor. **No es necesario crear `/etc/monitor.env` dentro del contenedor.**
 
 ### Backups no se crean
 
 ```bash
 # Probar manualmente
-docker exec -it <contenedor> bash
-source /etc/monitor.env
-/usr/local/bin/backup-notify.sh <nombre_bd>
+docker exec <contenedor> /usr/local/bin/backup-complete.sh
 
-# Ver logs
-tail -f /var/log/backup.log
+# Ver logs en tiempo real
+docker exec <contenedor> tail -f /var/log/backup.log
+
+# Verificar que el directorio de backups existe
+docker exec <contenedor> ls -la /backups/
 ```
 
 ---
@@ -389,19 +496,23 @@ tail -f /var/log/backup.log
 
 | Script | Propósito | Cuándo usar |
 |--------|-----------|-------------|
-| `install-all.sh` | Instalación inicial en todos los contenedores | Primera vez o reinstalación completa |
-| `update-scripts.sh` | Actualizar solo scripts (no config) | Después de git pull |
-| `configure-cron.sh` | Configurar cron en todos | Después de instalación inicial |
-| `test-manual.sh` | Prueba interactiva en un contenedor | Para testing individual |
+| `entrypoint.sh` | Configura cron automáticamente al iniciar | Siempre (embebido en imagen) |
+| `backup-complete.sh` | Backup de todas las BDs + Wasabi + Notificación | Ejecución automática por cron o manual |
+| `health-check-complete.sh` | Health check de todas las BDs + Reparación + Notificación | Ejecución automática por cron o manual |
+| `wasabi-upload.sh` | Subir backups a Wasabi S3 | Llamado automáticamente por backup-complete |
+| `deploy-update.sh` | Actualizar TODOS los contenedores del servidor | Después de mejorar la plantilla |
+| `configure-all-containers.sh` | Configurar credenciales masivamente | Después de crear contenedores |
 
 ---
 
 ## ✅ Checklist de Instalación
 
-- [ ] Repositorio clonado en `/home/adn/adn-monitor-db-scripts`
-- [ ] Scripts instalados en todos los contenedores (`install-all.sh`)
-- [ ] Credenciales configuradas en cada contenedor
-- [ ] Cron configurado en todos los contenedores
+- [ ] Plantilla clonada en `/home/adn/adn-docker-mariadb-template`
+- [ ] Contenedores creados desde la plantilla en `/var/docker-data/mariadb/`
+- [ ] Database Servers creados en el sistema (obtenidos Server ID y API Key)
+- [ ] Bases de datos sincronizadas (obtenidos Database IDs)
+- [ ] Credenciales configuradas en cada contenedor (`.env` con DBIDs)
+- [ ] Contenedores iniciados (cron se configura automáticamente)
 - [ ] Prueba manual exitosa en al menos un contenedor
 - [ ] Verificación en el sistema de monitoreo (logs recibidos)
 - [ ] Documentado qué contenedor tiene qué base de datos

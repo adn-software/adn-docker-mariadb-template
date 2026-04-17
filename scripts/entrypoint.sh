@@ -109,6 +109,80 @@ setup_cron_jobs() {
     fi
 }
 
+# Auto-registrar contenedor en el servidor de monitoreo
+auto_register() {
+    if [ -z "$MONITOR_API_URL" ]; then
+        warning "MONITOR_API_URL no configurado, saltando auto-registro"
+        return 0
+    fi
+    
+    log "Auto-registrando contenedor en el servidor de monitoreo..."
+    
+    # Obtener información del contenedor
+    local host=$(hostname -i | awk '{print $1}')
+    local port="${MYSQL_PORT:-3306}"
+    local container_name="${CONTAINER_NAME:-$(hostname)}"
+    local mariadb_version=$(mysqld --version | awk '{print $3}')
+    
+    # Preparar payload
+    local payload=$(cat <<EOF
+{
+  "host": "${host}",
+  "port": ${port},
+  "rootPassword": "${MYSQL_ROOT_PASSWORD}",
+  "containerName": "${container_name}",
+  "mariadbVersion": "${mariadb_version}"
+}
+EOF
+)
+    
+    # Hacer request al endpoint de registro
+    local response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/database-servers/register" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        --max-time 30 2>&1)
+    
+    local http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
+        log "✓ Contenedor registrado exitosamente (HTTP $http_code)"
+        
+        # Extraer credenciales de la respuesta
+        local server_id=$(echo "$body" | jq -r '.serverId' 2>/dev/null)
+        local api_key=$(echo "$body" | jq -r '.apiKey' 2>/dev/null)
+        local is_new=$(echo "$body" | jq -r '.isNew' 2>/dev/null)
+        
+        if [ "$is_new" = "true" ]; then
+            log "  ℹ Servidor nuevo creado"
+        else
+            log "  ℹ Servidor existente actualizado"
+        fi
+        
+        log "  Server ID: ${server_id:0:8}..."
+        log "  API Key: ${api_key:0:12}..."
+        
+        # Actualizar .env si es necesario
+        if [ -f "/.env" ]; then
+            if ! grep -q "^MONITOR_SERVER_ID=" /.env 2>/dev/null; then
+                echo "MONITOR_SERVER_ID=${server_id}" >> /.env
+                log "  ✓ MONITOR_SERVER_ID agregado al .env"
+            fi
+            
+            if ! grep -q "^MONITOR_API_KEY=" /.env 2>/dev/null; then
+                echo "MONITOR_API_KEY=${api_key}" >> /.env
+                log "  ✓ MONITOR_API_KEY agregado al .env"
+            fi
+        fi
+        
+        return 0
+    else
+        warning "No se pudo registrar el contenedor (HTTP $http_code)"
+        warning "Response: $body"
+        return 1
+    fi
+}
+
 # Configurar logging en foreground
 cron_logs() {
     # Iniciar tail en background para mostrar logs en los logs de Docker
@@ -124,6 +198,9 @@ log "ADN MariaDB Docker - Entrypoint"
 log "═══════════════════════════════════════════════════════════════"
 log "Iniciando contenedor MariaDB con soporte de monitoreo automático..."
 log "═══════════════════════════════════════════════════════════════"
+
+# Auto-registrar en el servidor de monitoreo (en background para no bloquear)
+(sleep 30 && auto_register) &
 
 # Configurar cron jobs
 cron_logs

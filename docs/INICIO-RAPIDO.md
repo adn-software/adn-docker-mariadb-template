@@ -1,145 +1,135 @@
-# 🚀 Inicio Rápido - Scripts de Backup y Health Check
+# 🚀 Inicio Rápido - Plantilla Docker MariaDB con Monitoreo
 
-Guía rápida para instalar y probar los scripts en un contenedor MariaDB existente.
+Guía rápida para crear un contenedor MariaDB con backup, health check y monitoreo automáticos.
 
 ---
 
 ## ✅ Estado del Backend
 
-El backend **YA TIENE IMPLEMENTADOS** los endpoints necesarios:
+El sistema backup-manager **YA TIENE IMPLEMENTADOS** los endpoints necesarios:
 
 - ✅ `POST /backup-logs` - Recibe notificaciones de backup
 - ✅ `POST /health-logs` - Recibe notificaciones de health check
 - ✅ `ApiKeyGuard` - Autenticación con X-API-Key
-- ✅ Validación de DTOs completa
-- ✅ Actualización automática de `lastBackupAt` y `healthStatus`
+- ✅ Database Servers y Database IDs para monitoreo
 
-**Ubicación en el código:**
-- `@/adn-servers-manager-api/src/modules/backup-logs/`
-- `@/adn-servers-manager-api/src/modules/health-logs/`
-- `@/adn-servers-manager-api/src/common/guards/api-key.guard.ts`
+**URL del sistema:** `https://qa.sm.apps-adn.com/backup-manager`
 
 ---
 
-## 📦 Paso 1: Instalación (1 minuto)
+## 📦 Paso 1: Crear Contenedor desde la Plantilla (2 minutos)
 
 ```bash
-# Ir al directorio
-cd /home/aleguizamon/ADN/adn-servers-manager/mariadb-backup-scripts
+# Ir al directorio de la plantilla
+cd /home/adn/adn-docker-mariadb-template
 
-# Ejecutar instalación automática
-./install.sh <nombre_contenedor>
+# Crear nuevo directorio para el contenedor
+mkdir -p /var/docker-data/mariadb/mariadb-3309-cliente1
+cd /var/docker-data/mariadb/mariadb-3309-cliente1
 
-# Ejemplo:
-./install.sh mariadb-3330-jccrp
+# Copiar archivos de la plantilla
+cp /home/adn/adn-docker-mariadb-template/Dockerfile .
+cp /home/adn/adn-docker-mariadb-template/docker-compose.yml .
+cp /home/adn/adn-docker-mariadb-template/.env.example .env
+
+# Editar configuración
+nano .env
 ```
 
-**Esto instalará:**
-- ✅ Scripts de backup y health check
-- ✅ Permisos de ejecución
-- ✅ Directorios necesarios
-- ✅ Archivo de configuración de ejemplo
+**Configurar mínimamente en `.env`:**
+```env
+CONTAINER_NAME=mariadb-3309-cliente1
+MYSQL_PORT=3309
+MYSQL_ROOT_PASSWORD=tu_password_seguro
+MYSQL_DATABASE=sistemasadn
+
+# Deshabilitar monitoreo temporalmente para prueba
+BACKUP_ENABLED=false
+HEALTH_CHECK_ENABLED=false
+```
+
+```bash
+# Iniciar contenedor
+docker compose up -d
+```
+
+**Esto creará:**
+- ✅ Contenedor MariaDB con scripts embebidos
+- ✅ Scripts de backup y health check en `/usr/local/bin/`
+- ✅ Directorios `/backups/` y `/var/log/`
 
 ---
 
 ## ⚙️ Paso 2: Configuración (2 minutos)
 
-### 2.1 Obtener credenciales del sistema
+### 2.1 Obtener credenciales del sistema (backup-manager)
 
-**Opción A: Usar la interfaz web**
-1. Ir a la sección "Database Servers"
-2. Crear nuevo servidor o seleccionar existente
-3. Copiar `serverId` y `apiKey`
-4. Sincronizar bases de datos
-5. Copiar `databaseId` de la base de datos que quieres monitorear
+**Usar la interfaz web:**
+1. Ir a `https://qa.sm.apps-adn.com/backup-manager`
+2. Crear "Database Server" con método de monitoreo **PASSIVE**
+3. Anotar `Server ID` y `API Key` generados
+4. Ejecutar "Sincronizar" para descubrir bases de datos
+5. Ir a "Bases de Datos" y anotar el `Database ID` de cada BD
 
-**Opción B: Usar el API**
+**Ver GUÍA-CONFIGURACION-MONITOREO.md para instrucciones detalladas con imágenes**
+
+### 2.2 Editar configuración del contenedor
+
 ```bash
-# Crear servidor (requiere JWT token)
-curl -X POST https://api.adnsistemas.com/api/v1/database-servers \
-  -H "Authorization: Bearer <JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "MariaDB Container - Cliente ABC",
-    "engine": "mariadb",
-    "host": "192.168.1.100",
-    "port": 3306,
-    "username": "root",
-    "password": "password",
-    "monitoringEnabled": true,
-    "backupEnabled": true
-  }'
-
-# Respuesta incluirá: serverId y apiKey
+# Editar el .env del contenedor
+cd /var/docker-data/mariadb/mariadb-3309-cliente1
+nano .env
 ```
 
-### 2.2 Editar configuración
-
-```bash
-# Editar configuración dentro del contenedor
-docker exec -it <nombre_contenedor> nano /etc/monitor.env
-
-# Cambiar estos valores:
-MONITOR_API_KEY=sk_live_TU_API_KEY_AQUI
-MONITOR_SERVER_ID=tu-server-uuid-aqui
-MONITOR_DATABASE_ID=tu-database-uuid-aqui
-```
-
-**Ejemplo de configuración completa:**
-```bash
-MONITOR_API_URL=https://api.adnsistemas.com/api/v1
+**Configurar credenciales obtenidas:**
+```env
+# Monitoreo (del paso anterior)
+MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
 MONITOR_API_KEY=sk_live_abc123xyz789...
 MONITOR_SERVER_ID=550e8400-e29b-41d4-a716-446655440000
-MONITOR_DATABASE_ID=660e8400-e29b-41d4-a716-446655440001
-BACKUP_DIR=/backups
-BACKUP_RETENTION_DAYS=7
-DB_HOST=localhost
-DB_PORT=3306
+
+# Database IDs usando formato DBID_<nombre_bd>=<uuid>
+# (uno por cada base de datos en el contenedor)
+DBID_sistemasadn=660e8400-e29b-41d4-a716-446655440001
+
+# Habilitar automatizaciones
+BACKUP_ENABLED=true
+BACKUP_SCHEDULE=0 2 * * *        # 2:00 AM diario
+
+HEALTH_CHECK_ENABLED=true
+HEALTH_SCHEDULE=0 */6 * * *     # Cada 6 horas
+```
+
+```bash
+# Reiniciar contenedor para aplicar cambios
+docker compose restart
 ```
 
 ---
 
 ## 🧪 Paso 3: Prueba Manual (3 minutos)
 
-### Opción A: Script interactivo (RECOMENDADO)
+### Comandos directos (sin entrar al contenedor)
 
 ```bash
-# Ejecutar script de prueba
-./test-manual.sh <nombre_contenedor> <nombre_base_datos>
+# Probar backup completo (todas las BDs + Wasabi + Notificación)
+docker exec mariadb-3309-cliente1 /usr/local/bin/backup-complete.sh
 
-# Ejemplo:
-./test-manual.sh mariadb-3330-jccrp sistemasadn
+# Ver logs en tiempo real
+docker exec mariadb-3309-cliente1 tail -f /var/log/backup.log
+
+# En otra terminal, probar health check
+docker exec mariadb-3309-cliente1 /usr/local/bin/health-check-complete.sh
+
+# Ver logs de health check
+docker exec mariadb-3309-cliente1 tail -f /var/log/health.log
 ```
 
-**El script te mostrará un menú:**
-```
-1. Ejecutar BACKUP
-2. Ejecutar HEALTH CHECK
-3. Ejecutar AMBOS (backup + health check)
-4. Ver logs de backup
-5. Ver logs de health check
-6. Listar backups existentes
-7. Salir
-```
+### Verificar en el sistema
 
-### Opción B: Comandos manuales
-
-```bash
-# Entrar al contenedor
-docker exec -it <nombre_contenedor> bash
-
-# Cargar variables
-source /etc/monitor.env
-
-# Ejecutar backup (verás logs en tiempo real)
-/usr/local/bin/backup-notify.sh sistemasadn
-
-# Ejecutar health check
-/usr/local/bin/health-check-notify.sh sistemasadn
-
-# Salir del contenedor
-exit
-```
+1. Ir a `https://qa.sm.apps-adn.com/backup-manager`
+2. Verificar en "Logs de Backup" que aparece el registro
+3. Verificar en "Logs de Salud" que aparece el health check
 
 ---
 

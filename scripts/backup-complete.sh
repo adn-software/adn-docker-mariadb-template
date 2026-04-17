@@ -80,12 +80,70 @@ get_user_databases() {
         2>/dev/null | tail -n +2
 }
 
+# Cache de database IDs (se carga una vez al inicio)
+declare -A DATABASE_IDS_CACHE
+
+# Cargar database IDs desde el endpoint
+load_database_ids() {
+    if [ -z "$MONITOR_API_URL" ] || [ -z "$MONITOR_SERVER_ID" ]; then
+        warning "Sistema de monitoreo no configurado completamente"
+        return 1
+    fi
+    
+    info "Obteniendo IDs de bases de datos desde el servidor..."
+    
+    # Obtener host y puerto del servidor
+    local host=$(hostname -i | awk '{print $1}')
+    local port="${MYSQL_PORT:-3306}"
+    
+    local response=$(curl -s -X POST "${MONITOR_API_URL}/database-servers/get-config" \
+        -H "Content-Type: application/json" \
+        -d "{\"host\":\"${host}\",\"port\":${port}}" \
+        --max-time 10 2>&1)
+    
+    if [ $? -eq 0 ]; then
+        # Parsear respuesta y llenar cache
+        local db_count=$(echo "$response" | jq -r '.databases | length' 2>/dev/null)
+        
+        if [ "$db_count" -gt 0 ]; then
+            for i in $(seq 0 $((db_count - 1))); do
+                local db_name=$(echo "$response" | jq -r ".databases[$i].name" 2>/dev/null)
+                local db_id=$(echo "$response" | jq -r ".databases[$i].id" 2>/dev/null)
+                
+                if [ -n "$db_name" ] && [ "$db_name" != "null" ]; then
+                    DATABASE_IDS_CACHE["$db_name"]="$db_id"
+                fi
+            done
+            
+            info "✓ Cargados ${db_count} IDs de bases de datos"
+            return 0
+        fi
+    fi
+    
+    warning "No se pudieron cargar los IDs de bases de datos desde el servidor"
+    return 1
+}
+
 # Obtener databaseId para una base de datos específica
 get_database_id() {
     local db_name="$1"
-    # El databaseId debe estar configurado en las variables de entorno con formato: DBID_[nombre_bd]
+    
+    # Intentar obtener del cache
+    if [ -n "${DATABASE_IDS_CACHE[$db_name]}" ]; then
+        echo "${DATABASE_IDS_CACHE[$db_name]}"
+        return 0
+    fi
+    
+    # Fallback: intentar obtener de variable de entorno (compatibilidad)
     local var_name="DBID_${db_name}"
-    echo "${!var_name}"
+    if [ -n "${!var_name}" ]; then
+        echo "${!var_name}"
+        return 0
+    fi
+    
+    # No encontrado
+    echo ""
+    return 1
 }
 
 # ============================================
@@ -419,6 +477,10 @@ main() {
     
     # Crear directorio de backups si no existe
     mkdir -p "$BACKUP_DIR"
+    
+    # Cargar IDs de bases de datos desde el servidor (si está configurado)
+    load_database_ids || warning "Continuando sin IDs de bases de datos actualizados"
+    echo ""
     
     # Obtener lista de bases de datos de usuario
     local databases=$(get_user_databases)
