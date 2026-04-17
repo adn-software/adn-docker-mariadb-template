@@ -24,23 +24,10 @@ cd mariadb-3309-cliente1
 # 2. Configurar .env
 nano .env
 # Editar: CONTAINER_NAME, MYSQL_PORT, MYSQL_ROOT_PASSWORD, etc.
+# NOTA: El registro en el servidor de monitoreo debe hacerse manualmente
 
 # 3. Iniciar contenedor
 docker compose up -d
-
-# 4. El contenedor se auto-registra en el servidor de monitoreo
-# (espera 30 segundos después del inicio)
-```
-
-### Verificar auto-registro
-
-```bash
-# Ver logs del contenedor
-docker compose logs | grep "Auto-registrando"
-
-# Debería mostrar:
-# [Entrypoint] Auto-registrando contenedor en el servidor de monitoreo...
-# [Entrypoint] ✓ Contenedor registrado exitosamente
 ```
 
 ---
@@ -67,9 +54,8 @@ docker compose logs | grep "Auto-registrando"
 │                                                              │
 │ ┌─────────────────────────────────────────────────────────┐ │
 │ │ ENTRYPOINT (Al iniciar)                                  │ │
-│ │ - Auto-registro en servidor central                      │ │
-│ │ - Descubrimiento de bases de datos                       │ │
-│ │ - Actualización de credenciales                          │ │
+│ │ - Configuración de cron para backups y health checks     │ │
+│ │ - Inicialización de MariaDB                              │ │
 │ └─────────────────────────────────────────────────────────┘ │
 │                                                              │
 │ ┌─────────────────────────────────────────────────────────┐ │
@@ -92,11 +78,10 @@ docker compose logs | grep "Auto-registrando"
 
 ### Flujo de Datos
 
-1. **Inicio del Contenedor**
-   - Entrypoint llama a `POST /api/database-servers/register`
-   - Servidor crea/actualiza registro
-   - Descubre bases de datos automáticamente
-   - Devuelve: `serverId`, `apiKey`, `databases[]`
+1. **Configuración Inicial (Manual)**
+   - Crear Database Server en el sistema de monitoreo
+   - Obtener `serverId` y `apiKey` del sistema
+   - Configurar variables en el `.env` del contenedor
 
 2. **Ejecución de Backup/Health Check**
    - Script llama a `POST /api/database-servers/get-config`
@@ -116,10 +101,10 @@ CONTAINER_NAME=mariadb-3309-cliente1
 MYSQL_PORT=3309
 MYSQL_ROOT_PASSWORD=tu_password_seguro
 
-# Sistema de Monitoreo (auto-configurado por entrypoint)
+# Sistema de Monitoreo (configuración manual requerida)
 MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
-MONITOR_API_KEY=sk_live_...  # Generado automáticamente
-MONITOR_SERVER_ID=uuid        # Generado automáticamente
+MONITOR_API_KEY=sk_live_...  # Obtener del sistema de monitoreo
+MONITOR_SERVER_ID=uuid        # Obtener del sistema de monitoreo
 
 # Backups Automáticos
 BACKUP_ENABLED=true
@@ -159,33 +144,19 @@ DBID_auditor=uuid-3
 
 ---
 
-## 📊 Monitoreo Automático
+## 📊 Monitoreo
 
-### Auto-Registro (Entrypoint)
+### Configuración Manual (Requerida)
 
-El contenedor se registra automáticamente al iniciar:
+El registro del contenedor debe realizarse manualmente en el sistema de monitoreo:
 
-```bash
-# En entrypoint.sh (ejecutado automáticamente)
-POST /api/database-servers/register
-{
-  "host": "172.18.0.2",
-  "port": 3309,
-  "rootPassword": "***",
-  "containerName": "mariadb-3309-cliente1",
-  "mariadbVersion": "10.11.6"
-}
+1. Crear un Database Server en `https://qa.sm.apps-adn.com/backup-manager`
+2. Configurar las credenciales en el archivo `.env` del contenedor:
 
-# Respuesta:
-{
-  "serverId": "uuid-servidor",
-  "apiKey": "sk_live_...",
-  "isNew": true,
-  "databases": [
-    { "name": "sistemasadn", "id": "uuid-1", "envVar": "DBID_sistemasadn" },
-    { "name": "produccion", "id": "uuid-2", "envVar": "DBID_produccion" }
-  ]
-}
+```env
+MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
+MONITOR_API_KEY=sk_live_...  # Generado por el sistema
+MONITOR_SERVER_ID=uuid        # Asignado por el sistema
 ```
 
 ### Backups Automáticos
@@ -254,24 +225,24 @@ Para actualizar múltiples contenedores:
 #    - Detiene el contenedor
 #    - Actualiza scripts
 #    - Reinicia el contenedor
-#    - Contenedor se auto-registra nuevamente
 ```
 
-### Configuración Manual (Opcional)
+### Configuración Manual
 
-**El entrypoint se auto-configura automáticamente. Este script es solo para casos especiales.**
+**El registro del contenedor debe realizarse manualmente.**
 
 ```bash
-# ✅ RECOMENDADO: Dejar que el entrypoint se auto-configure automáticamente
-docker compose up -d
-# Esperar 30 segundos → Contenedor se registra automáticamente
+# 1. Crear Database Server en el sistema de monitoreo y obtener credenciales
 
-# ⚠️ OPCIONAL: Si necesitas re-configurar credenciales manualmente
+# 2. Configurar en el .env del contenedor
 cd /var/docker-data/mariadb/mariadb-3309-cliente1
+nano .env
+# Agregar:
+# MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
+# MONITOR_API_KEY=sk_live_...
+# MONITOR_SERVER_ID=uuid-...
 
-# Solo actualiza MONITOR_API_KEY y MONITOR_SERVER_ID (sin DBID_*)
-/home/adn/adn-docker-mariadb-template/scripts/auto-configure.sh 159.195.57.30 3309
-
+# 3. Reiniciar contenedor
 docker compose restart
 ```
 
@@ -281,24 +252,21 @@ docker compose restart
 
 ## 🔧 Troubleshooting
 
-### El contenedor no se auto-registra
+### El contenedor no aparece en el dashboard
 
-**Síntoma:** No aparece en el dashboard después de 30 segundos
+**Síntoma:** No aparece en el dashboard del sistema de monitoreo
 
 **Solución:**
 ```bash
-# 1. Verificar logs
-docker compose logs | grep "Auto-registrando"
+# 1. Verificar que el Database Server fue creado en el sistema de monitoreo
+# 2. Verificar credenciales en .env
+cat .env | grep MONITOR
 
-# 2. Verificar MONITOR_API_URL en .env
-cat .env | grep MONITOR_API_URL
-
-# 3. Probar conectividad
+# 3. Probar conectividad con el API
 docker compose exec mariadb curl -I https://qa.sm-api.apps-adn.com/api
 
-# 4. Re-registrar manualmente
-docker compose exec mariadb bash
-/usr/local/bin/auto-configure.sh $(hostname -i) 3309
+# 4. Verificar que MONITOR_API_KEY y MONITOR_SERVER_ID estén configurados
+docker compose exec mariadb env | grep MONITOR
 ```
 
 ### Los backups no se notifican

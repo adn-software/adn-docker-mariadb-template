@@ -123,7 +123,6 @@ fi
 # Parsear respuesta JSON
 SERVER_ID=$(echo "$RESPONSE" | jq -r '.serverId' 2>/dev/null)
 API_KEY=$(echo "$RESPONSE" | jq -r '.apiKey' 2>/dev/null)
-MONITOR_API_URL=$(echo "$RESPONSE" | jq -r '.apiUrl' 2>/dev/null)
 
 if [ -z "$SERVER_ID" ] || [ "$SERVER_ID" = "null" ]; then
     error "No se pudo obtener el Server ID de la respuesta"
@@ -157,8 +156,7 @@ update_env_var() {
     fi
 }
 
-# Actualizar solo las credenciales del servidor
-update_env_var "MONITOR_API_URL" "$MONITOR_API_URL"
+# Actualizar solo las credenciales del servidor (MONITOR_API_URL no se modifica)
 update_env_var "MONITOR_API_KEY" "$API_KEY"
 update_env_var "MONITOR_SERVER_ID" "$SERVER_ID"
 
@@ -171,9 +169,10 @@ echo -e "${GREEN}✓ Configuración completada${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "Credenciales del servidor actualizadas:"
-echo "  • MONITOR_API_URL: $MONITOR_API_URL"
 echo "  • MONITOR_API_KEY: ${API_KEY:0:12}..."
 echo "  • MONITOR_SERVER_ID: $SERVER_ID"
+echo ""
+echo "  ℹ️  MONITOR_API_URL no se modificó (conserva su valor actual)"
 echo ""
 echo "ℹ️  Los IDs de bases de datos se obtienen dinámicamente en cada ejecución"
 echo "    de backup-complete.sh y health-check-complete.sh"

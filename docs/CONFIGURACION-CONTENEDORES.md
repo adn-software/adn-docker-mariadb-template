@@ -1,6 +1,8 @@
-# Configuración de Contenedores MariaDB para Monitoreo Automático
+# Configuración de Contenedores MariaDB para Backups y Health Checks
 
 Esta guía explica cómo configurar los contenedores MariaDB para que ejecuten automáticamente los scripts de backup y health check.
+
+**⚠️ IMPORTANTE:** El registro del contenedor en el sistema de monitoreo debe hacerse **manualmente**. El contenedor NO se auto-registra automáticamente.
 
 ---
 

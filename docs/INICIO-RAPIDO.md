@@ -60,7 +60,9 @@ docker compose up -d
 
 ---
 
-## ⚙️ Paso 2: Configuración (2 minutos)
+## ⚙️ Paso 2: Configuración Manual (Requerida)
+
+El registro del contenedor en el sistema de monitoreo debe hacerse **manualmente**.
 
 ### 2.1 Obtener credenciales del sistema (backup-manager)
 
@@ -169,7 +171,7 @@ curl -X GET "https://api.adnsistemas.com/api/v1/health-logs?databaseId=<database
 
 ---
 
-## 🕐 Paso 5: Configurar Ejecución Automática (OPCIONAL)
+## 🕐 Paso 5: Configurar Ejecución Automática (CRON)
 
 **⚠️ IMPORTANTE:** Solo configura esto después de verificar que todo funciona correctamente en modo manual.
 
