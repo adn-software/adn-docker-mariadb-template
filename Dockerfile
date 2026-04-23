@@ -1,12 +1,13 @@
 FROM mariadb:10.5
 
-# Instalar cron y AWS CLI para backups y uploads a Wasabi
+# Instalar cron, AWS CLI y jq para backups y uploads a Wasabi
 RUN apt-get update && apt-get install -y \
     cron \
     curl \
     unzip \
     python3 \
     python3-pip \
+    jq \
     && pip3 install awscli \
     && rm -rf /var/lib/apt/lists/*
     

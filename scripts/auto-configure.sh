@@ -57,7 +57,8 @@ fi
 
 HOST="$1"
 PORT="$2"
-API_URL="${3:-https://qa.sm-api.apps-adn.com/api}"
+# API_URL="${3:-https://qa.sm-api.apps-adn.com/api}"
+API_URL="http://localhost:4000/api"
 ENV_FILE=".env"
 
 log "Iniciando auto-configuración..."
@@ -179,7 +180,68 @@ echo "    de backup-complete.sh y health-check-complete.sh"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-warning "Para aplicar los cambios, reinicia el contenedor:"
-echo "  docker compose restart"
+# Verificar si el contenedor está corriendo y reiniciarlo
+log "Verificando estado del contenedor..."
+
+# Obtener el nombre del contenedor desde el .env primero
+CONTAINER_NAME_FROM_ENV=$(grep "^CONTAINER_NAME=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" | xargs)
+
+if [ -n "$CONTAINER_NAME_FROM_ENV" ]; then
+    CONTAINER_NAME="$CONTAINER_NAME_FROM_ENV"
+else
+    # Fallback: obtener desde docker-compose.yml
+    CONTAINER_NAME=$(grep -E '^\s*container_name:' docker-compose.yml 2>/dev/null | sed 's/.*container_name:\s*//' | tr -d '"' | tr -d "'" | xargs)
+    
+    # Si es una variable con default, extraer el default
+    if echo "$CONTAINER_NAME" | grep -q '\${.*:-'; then
+        CONTAINER_NAME=$(echo "$CONTAINER_NAME" | sed 's/.*:-\([^}]*\)}.*/\1/')
+    fi
+    
+    # Si aún está vacío, usar el nombre de la carpeta
+    if [ -z "$CONTAINER_NAME" ]; then
+        CONTAINER_NAME=$(basename "$(pwd)")
+    fi
+fi
+
+log "Nombre del contenedor: $CONTAINER_NAME"
+
+# Función para ejecutar docker-compose/docker compose
+run_docker_compose() {
+    local cmd="$1"
+    
+    # Intentar con docker-compose (local)
+    if docker-compose $cmd 2>/dev/null; then
+        return 0
+    fi
+    
+    # Si falla, intentar con docker compose (remoto)
+    if docker compose $cmd 2>/dev/null; then
+        return 0
+    fi
+    
+    # Si ambos fallan, retornar error
+    return 1
+}
+
+# Verificar si el contenedor está corriendo
+if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    success "Contenedor está corriendo - procediendo a reconstruir e iniciar..."
+    echo ""
+    
+    # Reconstruir e iniciar el contenedor (preserva volúmenes/datos)
+    if run_docker_compose "up -d --build"; then
+        success "Contenedor reconstruido e iniciado exitosamente"
+        log "Los cambios del .env y Dockerfile han sido aplicados"
+    else
+        error "No se pudo reconstruir e iniciar el contenedor"
+        warning "Reinicio manual requerido:"
+        echo "  docker-compose up -d --build  (o: docker compose up -d --build)"
+    fi
+else
+    log "Contenedor no está corriendo - no se requiere reinicio"
+    log "Para iniciar el contenedor más tarde:"
+    echo "  docker-compose up -d  (o: docker compose up -d)"
+fi
+
 echo ""
 log "Backup del .env anterior guardado en: $BACKUP_FILE"

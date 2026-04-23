@@ -29,8 +29,7 @@ services:
       WASABI_REGION: ${WASABI_REGION:-us-east-1}
       WASABI_ENDPOINT: ${WASABI_ENDPOINT:-https://s3.us-east-1.wasabisys.com}
       # Configuración del formato de nombre de backup
-      SERVER_NAME: ${SERVER_NAME:-servidor}
-      CLIENT_NAME: ${CLIENT_NAME:-cliente}
+      CONTAINER_NAME: ${CONTAINER_NAME:-mariadb-client}
       MYSQL_PORT_EXT: ${MYSQL_PORT:-3306}
       # Configuración del sistema de monitoreo ADN
       MONITOR_API_URL: ${MONITOR_API_URL:-https://qa.sm.apps-adn.com/api/v1}

@@ -36,8 +36,7 @@ WASABI_ENDPOINT="${WASABI_ENDPOINT:-https://s3.us-east-1.wasabisys.com}"
 WASABI_UPLOAD_ENABLED="${WASABI_UPLOAD_ENABLED:-true}"
 
 # Configuración del formato de nombre de backup
-SERVER_NAME="${SERVER_NAME:-servidor}"
-CLIENT_NAME="${CLIENT_NAME:-cliente}"
+CONTAINER_NAME="${CONTAINER_NAME:-$(hostname)}"
 MYSQL_PORT_EXT="${MYSQL_PORT_EXT:-3306}"
 
 # ============================================
@@ -85,43 +84,73 @@ declare -A DATABASE_IDS_CACHE
 
 # Cargar database IDs desde el endpoint
 load_database_ids() {
+    info "=== INICIANDO CARGA DE DATABASE IDs ==="
+    info "MONITOR_API_URL: '${MONITOR_API_URL}'"
+    info "MONITOR_SERVER_ID: '${MONITOR_SERVER_ID}'"
+    
     if [ -z "$MONITOR_API_URL" ] || [ -z "$MONITOR_SERVER_ID" ]; then
         warning "Sistema de monitoreo no configurado completamente"
         return 1
     fi
     
+    # Verificar si jq está instalado
+    if ! command -v jq &> /dev/null; then
+        warning "jq no está instalado, no se pueden cargar IDs de bases de datos"
+        return 1
+    fi
+    
     info "Obteniendo IDs de bases de datos desde el servidor..."
     
-    # Obtener host y puerto del servidor
-    local host=$(hostname -i | awk '{print $1}')
-    local port="${MYSQL_PORT:-3306}"
+    # Usar el puerto externo para identificar el servidor
+    # El servidor está registrado con la IP del host y el puerto externo
+    local port="${MYSQL_PORT_EXT:-3306}"
     
-    local response=$(curl -s -X POST "${MONITOR_API_URL}/database-servers/get-config" \
-        -H "Content-Type: application/json" \
-        -d "{\"host\":\"${host}\",\"port\":${port}}" \
-        --max-time 10 2>&1)
+    # Intentar obtener la configuración por serverId si está disponible
+    if [ -n "$MONITOR_SERVER_ID" ]; then
+        info "Consultando: ${MONITOR_API_URL}/database-servers/${MONITOR_SERVER_ID}"
+        local response=$(curl -s -X GET "${MONITOR_API_URL}/database-servers/${MONITOR_SERVER_ID}" \
+            --max-time 10 2>&1)
+        info "Response status: $?"
+        info "Response (primeros 500 chars): ${response:0:500}"
+    else
+        warning "MONITOR_SERVER_ID no configurado, no se pueden cargar IDs de bases de datos"
+        return 1
+    fi
     
     if [ $? -eq 0 ]; then
         # Parsear respuesta y llenar cache
+        # El endpoint devuelve { id, name, ..., databases: [...] }
         local db_count=$(echo "$response" | jq -r '.databases | length' 2>/dev/null)
+        info "db_count parseado: '$db_count'"
+        
+        # Validar que db_count es un número
+        if [[ ! "$db_count" =~ ^[0-9]+$ ]]; then
+            warning "Respuesta del servidor no válida (db_count no es un número): $db_count"
+            warning "Response completo: $response"
+            return 1
+        fi
         
         if [ "$db_count" -gt 0 ]; then
             for i in $(seq 0 $((db_count - 1))); do
-                local db_name=$(echo "$response" | jq -r ".databases[$i].name" 2>/dev/null)
+                local db_name=$(echo "$response" | jq -r ".databases[$i].databaseName" 2>/dev/null)
                 local db_id=$(echo "$response" | jq -r ".databases[$i].id" 2>/dev/null)
                 
-                if [ -n "$db_name" ] && [ "$db_name" != "null" ]; then
+                if [ -n "$db_name" ] && [ "$db_name" != "null" ] && [ -n "$db_id" ] && [ "$db_id" != "null" ]; then
                     DATABASE_IDS_CACHE["$db_name"]="$db_id"
+                    info "  - $db_name -> $db_id"
                 fi
             done
             
             info "✓ Cargados ${db_count} IDs de bases de datos"
             return 0
+        else
+            info "No se encontraron bases de datos en el servidor"
+            return 0
         fi
+    else
+        warning "Error al conectar con el servidor de monitoreo"
+        return 1
     fi
-    
-    warning "No se pudieron cargar los IDs de bases de datos desde el servidor"
-    return 1
 }
 
 # Obtener databaseId para una base de datos específica
@@ -159,12 +188,12 @@ cleanup_wasabi_backups() {
         return 0
     fi
     
-    local backup_pattern="${SERVER_NAME}-${MYSQL_PORT_EXT}-${CLIENT_NAME}-${db_name}-*.sql.gz"
+    local backup_pattern="${CONTAINER_NAME}-${MYSQL_PORT_EXT}-${db_name}-*.sql.gz"
     
     log "Limpiando backups antiguos en Wasabi (manteniendo últimos $retention_count)..."
     
     # Listar todos los backups de esta BD ordenados por fecha
-    local all_backups=$(aws s3 ls "s3://${WASABI_BUCKET}/${SERVER_NAME}-${MYSQL_PORT_EXT}-${CLIENT_NAME}-${db_name}-" \
+    local all_backups=$(aws s3 ls "s3://${WASABI_BUCKET}/${CONTAINER_NAME}-${MYSQL_PORT_EXT}-${db_name}-" \
         --endpoint-url="$WASABI_ENDPOINT" \
         --region="$WASABI_REGION" 2>/dev/null | grep "\.sql\.gz$" | sort -k1,2 -r)
     
@@ -213,7 +242,10 @@ upload_to_wasabi() {
     # Construir nombre del archivo en S3
     local timestamp=$(basename "$backup_file" | grep -oE '[0-9]{8}_[0-9]{6}' || date +'%Y%m%d_%H%M%S')
     local formatted_timestamp=$(echo "$timestamp" | sed 's/_/-/')
-    local s3_key="${SERVER_NAME}-${MYSQL_PORT_EXT}-${CLIENT_NAME}-${db_name}-${formatted_timestamp}.sql.gz"
+    local s3_key="${CONTAINER_NAME}-${MYSQL_PORT_EXT}-${db_name}-${formatted_timestamp}.sql.gz"
+    
+    # Guardar la ruta de S3 en una variable global para usarla después
+    WASABI_S3_PATH="s3://${WASABI_BUCKET}/${s3_key}"
     
     # Configurar credenciales AWS temporalmente
     local aws_config_dir=$(mktemp -d)
@@ -286,7 +318,8 @@ send_notification() {
         -d "$payload" \
         --max-time 30 \
         --retry 3 \
-        --retry-delay 5 2>&1)
+        --retry-delay 5 \
+        --connect-timeout 10 2>&1)
     
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
@@ -294,10 +327,13 @@ send_notification() {
     if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
         log "✓ Notificación enviada exitosamente (HTTP $http_code)"
         return 0
+    elif [ "$http_code" = "000" ]; then
+        warning "⚠ No se pudo conectar al sistema de monitoreo (posible problema de red)"
+        return 0  # No fallar el proceso por error de conexión
     else
-        error "✗ Error al enviar notificación (HTTP $http_code)"
-        error "Response: $body"
-        return 1
+        warning "⚠ Error al enviar notificación (HTTP $http_code)"
+        warning "Response: $body"
+        return 0  # No fallar el proceso por error de notificación
     fi
 }
 
@@ -338,8 +374,10 @@ backup_database() {
         gzip "$backup_file"
         local backup_file_gz="${backup_file}.gz"
         local compressed_size=$(stat -c%s "$backup_file_gz" 2>/dev/null || stat -f%z "$backup_file_gz" 2>/dev/null)
-        local compressed_size_mb=$(echo "scale=2; $compressed_size / 1024 / 1024" | bc)
-        local compression_ratio=$(echo "scale=4; $compressed_size / $uncompressed_size" | bc)
+        # Usar awk en lugar de bc para calcular tamaño en MB
+        local compressed_size_mb=$(awk "BEGIN {printf \"%.2f\", $compressed_size / 1024 / 1024}")
+        # Usar awk en lugar de bc para calcular ratio de compresión
+        local compression_ratio=$(awk "BEGIN {printf \"%.4f\", $compressed_size / $uncompressed_size}")
         
         local end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         local end_timestamp=$(date +%s)
@@ -348,8 +386,13 @@ backup_database() {
         log "✓ Backup creado: ${backup_file_gz} (${compressed_size_mb} MB)"
         
         # Subir a Wasabi
+        local wasabi_path=""
         if upload_to_wasabi "$backup_file_gz" "$db_name"; then
             wasabi_uploaded=true
+            wasabi_path="$WASABI_S3_PATH"
+            # Borrar archivo local después de subir exitosamente
+            rm -f "$backup_file_gz"
+            info "✓ Archivo local eliminado después de subir a Wasabi"
         else
             wasabi_error="Upload failed"
         fi
@@ -359,9 +402,15 @@ backup_database() {
         local hostname=$(hostname)
         local mariadb_version=$(mysql -V | awk '{print $5}' | sed 's/,//')
         
-        local payload=$(cat <<EOF
+        info "Preparando notificación para '$db_name':"
+        info "  database_id: '${database_id}'"
+        info "  MONITOR_SERVER_ID: '${MONITOR_SERVER_ID}'"
+        
+        # Solo enviar notificación si tenemos databaseId y serverId
+        if [ -n "$database_id" ] && [ -n "$MONITOR_SERVER_ID" ]; then
+            local payload=$(cat <<EOF
 {
-  "databaseId": "${database_id:-$MONITOR_DATABASE_ID}",
+  "databaseId": "${database_id}",
   "serverId": "${MONITOR_SERVER_ID}",
   "backupType": "full",
   "status": "success",
@@ -369,26 +418,29 @@ backup_database() {
   "completedAt": "${end_time}",
   "duration": ${duration},
   "backupSize": ${compressed_size},
-  "backupPath": "${backup_file_gz}",
+  "backupPath": "${wasabi_path}",
   "compressionRatio": ${compression_ratio},
   "source": "container",
-  "wasabiUploaded": ${wasabi_uploaded},
   "metadata": {
     "hostname": "${hostname}",
     "mariadbVersion": "${mariadb_version}",
     "databaseName": "${db_name}",
     "uncompressedSize": ${uncompressed_size},
+    "wasabiUploaded": ${wasabi_uploaded},
     $(if [ -n "$wasabi_error" ]; then echo "\"wasabiError\": \"${wasabi_error}\","; fi)
     "retentionDays": ${RETENTION_DAYS}
   }
 }
 EOF
 )
-        
-        if send_notification "$payload"; then
-            notification_sent=true
+            
+            if send_notification "$payload"; then
+                notification_sent=true
+            else
+                notification_error="Failed to send notification"
+            fi
         else
-            notification_error="Failed to send notification"
+            warning "⚠ No se envió notificación (databaseId o serverId no configurados)"
         fi
         
         log "✓ Backup de '$db_name' completado (${duration}s)"

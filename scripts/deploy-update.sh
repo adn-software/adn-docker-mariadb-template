@@ -82,25 +82,45 @@ is_container_running() {
     docker ps --format '{{.Names}}' | grep -q "^${container_name}$"
 }
 
-# Obtener el nombre del contenedor desde docker-compose.yml
+# Obtener el nombre del contenedor desde docker-compose.yml o .env
 get_container_name() {
     local container_dir="$1"
     local compose_file="$container_dir/docker-compose.yml"
+    local env_file="$container_dir/.env"
     
     if [ ! -f "$compose_file" ]; then
         echo ""
         return 1
     fi
     
-    # Intentar obtener el nombre del contenedor
-    local container_name=$(grep -E '^\s*container_name:' "$compose_file" | sed 's/.*container_name:\s*//' | tr -d '"' | tr -d "'" | xargs)
-    
-    if [ -z "$container_name" ]; then
-        # Si no tiene container_name, usar el nombre de la carpeta
-        container_name=$(basename "$container_dir")
+    # Intentar obtener el nombre del contenedor desde el .env primero (variable CONTAINER_NAME)
+    if [ -f "$env_file" ]; then
+        local env_container_name=$(grep "^CONTAINER_NAME=" "$env_file" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" | xargs)
+        if [ -n "$env_container_name" ]; then
+            echo "$env_container_name"
+            return 0
+        fi
     fi
     
-    echo "$container_name"
+    # Si no está en .env, intentar obtener desde docker-compose.yml
+    local compose_container_name=$(grep -E '^\s*container_name:' "$compose_file" | head -n1 | sed 's/.*container_name:\s*//' | tr -d '"' | tr -d "'" | xargs)
+    
+    # Si es una variable con default (${VAR:-default}), extraer el default
+    if echo "$compose_container_name" | grep -q '\${.*:-'; then
+        # Extraer el valor por defecto de la sintaxis ${VAR:-default}
+        compose_container_name=$(echo "$compose_container_name" | sed 's/.*:-\([^}]*\)}.*/\1/')
+    fi
+    
+    # Limpiar cualquier residuo de sintaxis ${...}
+    compose_container_name=$(echo "$compose_container_name" | sed 's/\${\([^}]*\)}//g')
+    
+    if [ -n "$compose_container_name" ] && [ "$compose_container_name" != "" ]; then
+        echo "$compose_container_name"
+        return 0
+    fi
+    
+    # Fallback: usar el nombre de la carpeta
+    echo "$(basename "$container_dir")"
 }
 
 # Verificar si es un directorio de contenedor MariaDB válido
@@ -194,11 +214,10 @@ update_container_files() {
     success "Archivos actualizados en: $container_name"
 }
 
-# Actualizar un contenedor específico
+# Actualizar un contenedor específico (solo archivos, sin reiniciar)
 update_container() {
     local container_dir="$1"
     local container_name=$(get_container_name "$container_dir")
-    local was_running=false
     
     if [ -z "$container_name" ]; then
         error "No se pudo obtener el nombre del contenedor de: $container_dir"
@@ -209,40 +228,19 @@ update_container() {
     log "Procesando contenedor: $container_name"
     log "═══════════════════════════════════════════════════════════════"
     
-    # Verificar si está corriendo
+    # Verificar estado del contenedor (solo informativo)
     if is_container_running "$container_name"; then
-        was_running=true
-        info "Contenedor está corriendo, será detenido temporalmente"
-        
-        # Detener contenedor
-        log "Deteniendo contenedor..."
-        cd "$container_dir"
-        docker-compose down || {
-            error "No se pudo detener el contenedor"
-            return 1
-        }
-        success "Contenedor detenido"
+        info "Contenedor está corriendo - los cambios se aplicarán al reiniciar manualmente"
     else
         info "Contenedor no está corriendo"
     fi
     
-    # Actualizar archivos
+    # Actualizar archivos solamente
     update_container_files "$container_dir"
     
-    # Reconstruir e iniciar solo si estaba corriendo
-    if [ "$was_running" = true ]; then
-        log "Reconstruyendo e iniciando contenedor..."
-        cd "$container_dir"
-        docker-compose up -d --build || {
-            error "No se pudo reconstruir/iniciar el contenedor"
-            return 1
-        }
-        success "Contenedor reconstruido e iniciado"
-    else
-        info "Contenedor no será iniciado (no estaba corriendo antes)"
-    fi
-    
-    success "Actualización completada: $container_name"
+    success "Archivos actualizados: $container_name"
+    info "Para aplicar los cambios, reinicia el contenedor manualmente:"
+    info "  cd $container_dir && docker-compose down && docker-compose up -d --build"
     echo ""
     
     return 0

@@ -9,6 +9,10 @@
 #
 # Ejemplo:
 #   ./update-env-all.sh /var/docker-data/mariadb
+#
+# Este script actualiza/agrega variables específicas en el .env de cada
+# contenedor. Las variables a modificar se definen en la sección
+# CONFIGURACIÓN DE VARIABLES al final del script.
 ###############################################################################
 
 set -e
@@ -60,41 +64,145 @@ log "Procesando contenedores en: $BASE_PATH"
 # Función para verificar si es un contenedor MariaDB válido
 is_mariadb_container() {
     local dir="$1"
-    
+
     # Debe tener docker-compose.yml
     if [ ! -f "$dir/docker-compose.yml" ]; then
         return 1
     fi
-    
-    # Debe tener Dockerfile o ser un contenedor mariadb
-    if [ ! -f "$dir/Dockerfile" ] && [ ! -f "$dir/docker-compose.yml" ]; then
-        return 1
-    fi
-    
+
     # Verificar que docker-compose.yml contiene mariadb
     if grep -q "mariadb" "$dir/docker-compose.yml" 2>/dev/null || \
        grep -q "image: mariadb" "$dir/docker-compose.yml" 2>/dev/null || \
        [ -f "$dir/Dockerfile" ]; then
         return 0
     fi
-    
+
     return 1
 }
 
-# Función para verificar si el .env ya tiene la configuración nueva
-has_new_config() {
-    local env_file="$1"
-    
-    if [ ! -f "$env_file" ]; then
-        return 1
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN DE VARIABLES A ACTUALIZAR/AGREGAR
+# ═══════════════════════════════════════════════════════════════════════════════
+# Define aquí las variables que quieres actualizar/agregar en cada .env
+# Formato: "NOMBRE_VARIABLE=valor"
+# Las variables que ya existan se actualizarán, las que no existan se agregarán.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+declare -a ENV_VARS=(
+    # Tareas automáticas (CRON)
+    "BACKUP_ENABLED=true"
+    "BACKUP_SCHEDULE=0 2 * * *"
+    "HEALTH_CHECK_ENABLED=true"
+    "HEALTH_CHECK_SCHEDULE=0 3 * * *"
+
+    # Monitoreo
+    "MONITOR_API_URL=http://192.168.10.89:4000/api"
+    "MONITOR_API_KEY="
+    "MONITOR_SERVER_ID="
+
+    # Despliegue masivo
+    "MARIADB_CONTAINERS_PATH=/home/aleguizamon/ADN/adn-servers-manager/docker-mariadb-tests"
+    "BACKUP_PATH=/home/aleguizamon/ADN/adn-servers-manager/backups"
+
+    # Wasabi S3
+    "WASABI_UPLOAD_ENABLED=true"
+    "WASABI_ACCESS_KEY=0O4LJTDG9TF64N3NSQHD"
+    "WASABI_SECRET_KEY=M5crOj5KtmKYOUUaW5Je2EnztVOW7gFNlYpFXjG7"
+    "WASABI_BUCKET=adn-backups-bd"
+    "WASABI_REGION=us-east-1"
+    "WASABI_ENDPOINT=https://s3.wasabisys.com"
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUNCIONES DE MANEJO DE VARIABLES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Función para escapar caracteres especiales en sed
+escape_for_sed() {
+    echo "$1" | sed 's/[&/\]/\\&/g'
+}
+
+# Función para asegurar que el archivo termine con newline
+ensure_trailing_newline() {
+    local file="$1"
+    # Verificar si el archivo termina con newline, si no, agregarlo
+    if [ -s "$file" ]; then
+        local last_char=$(tail -c 1 "$file" | od -An -tx1 | tr -d ' ')
+        if [ "$last_char" != "0a" ]; then
+            echo "" >> "$file"
+        fi
     fi
-    
-    # Verificar si ya tiene alguna de las variables nuevas
-    if grep -q "CONFIGURACIÓN DE TAREAS AUTOMÁTICAS" "$env_file" 2>/dev/null; then
+}
+
+# Función para actualizar o agregar una variable en el .env
+update_or_add_var() {
+    local env_file="$1"
+    local var_name="$2"
+    local var_value="$3"
+
+    # Verificar si la variable ya existe (no comentada)
+    if grep -q "^${var_name}=" "$env_file" 2>/dev/null; then
+        # La variable existe, actualizar su valor
+        local escaped_value=$(escape_for_sed "$var_value")
+        sed -i "s/^${var_name}=.*/${var_name}=${escaped_value}/" "$env_file"
+        echo "updated"
+    elif grep -q "^#${var_name}=" "$env_file" 2>/dev/null; then
+        # La variable está comentada, agregar nueva línea al final
+        ensure_trailing_newline "$env_file"
+        echo "${var_name}=${var_value}" >> "$env_file"
+        echo "added"
+    else
+        # La variable no existe, agregarla al final
+        ensure_trailing_newline "$env_file"
+        echo "${var_name}=${var_value}" >> "$env_file"
+        echo "added"
+    fi
+}
+
+# Función para verificar si el .env necesita actualización
+# Retorna 0 si necesita cambios, 1 si está actualizado
+needs_update() {
+    local env_file="$1"
+
+    if [ ! -f "$env_file" ]; then
         return 0
     fi
-    
+
+    for var_def in "${ENV_VARS[@]}"; do
+        local var_name=$(echo "$var_def" | cut -d'=' -f1)
+        local var_value=$(echo "$var_def" | cut -d'=' -f2-)
+
+        # Verificar si la variable existe con el valor correcto
+        if ! grep -q "^${var_name}=${var_value}$" "$env_file" 2>/dev/null; then
+            # No existe o tiene valor diferente
+            return 0
+        fi
+    done
+
+    # Todas las variables están actualizadas
     return 1
+}
+
+# Función para contar cuántas variables se actualizarán/agregarán
+count_pending_changes() {
+    local env_file="$1"
+    local count=0
+
+    if [ ! -f "$env_file" ]; then
+        echo "${#ENV_VARS[@]}"
+        return
+    fi
+
+    for var_def in "${ENV_VARS[@]}"; do
+        local var_name=$(echo "$var_def" | cut -d'=' -f1)
+        local var_value=$(echo "$var_def" | cut -d'=' -f2-)
+
+        if ! grep -q "^${var_name}=${var_value}$" "$env_file" 2>/dev/null; then
+            count=$((count + 1))
+        fi
+    done
+
+    echo "$count"
 }
 
 # Función para actualizar el .env
@@ -102,104 +210,49 @@ update_env() {
     local container_dir="$1"
     local container_name=$(basename "$container_dir")
     local env_file="$container_dir/.env"
-    
+    local updated_count=0
+    local added_count=0
+
     log "Procesando: $container_name"
-    
+
     # Verificar si existe .env
     if [ ! -f "$env_file" ]; then
         warning "  No existe .env en $container_name, creando uno nuevo..."
         touch "$env_file"
+        # Agregar header informativo
+        echo "# Configuración de MariaDB Container" >> "$env_file"
+        echo "" >> "$env_file"
     fi
-    
-    # Verificar si ya tiene la configuración nueva
-    if has_new_config "$env_file"; then
-        warning "  $container_name ya tiene la configuración nueva, saltando..."
+
+    # Verificar si necesita actualización
+    local pending=$(count_pending_changes "$env_file")
+    if [ "$pending" -eq 0 ]; then
+        info "  Todas las variables están actualizadas, saltando..."
         return 0
     fi
-    
+
+    info "  Variables pendientes: $pending"
+
     # Hacer backup del .env
     local backup_file="$env_file.backup.$(date +%Y%m%d_%H%M%S)"
     cp "$env_file" "$backup_file"
     log "  Backup creado: $(basename "$backup_file")"
-    
-    # Agregar la configuración nueva
-    cat >> "$env_file" << 'EOF'
 
-# ═══════════════════════════════════════════════════════════════
-# CONFIGURACIÓN DE TAREAS AUTOMÁTICAS (CRON)
-# ═══════════════════════════════════════════════════════════════
-# Formato cron: minuto hora día-mes mes día-semana
-# Ejemplos:
-#   "0 2 * * *"     = Todos los días a las 2:00 AM
-#   "0 */6 * * *"   = Cada 6 horas
-#   "0 0,12 * * *"  = Dos veces al día (medianoche y mediodía)
-# ═══════════════════════════════════════════════════════════════
+    # Procesar cada variable
+    for var_def in "${ENV_VARS[@]}"; do
+        local var_name=$(echo "$var_def" | cut -d'=' -f1)
+        local var_value=$(echo "$var_def" | cut -d'=' -f2-)
 
-# Backup automático (backup-complete.sh: todas las BDs + Wasabi + Notificación)
-BACKUP_ENABLED=false
-BACKUP_SCHEDULE=0 2 * * *
+        local result=$(update_or_add_var "$env_file" "$var_name" "$var_value")
 
-# Health check y reparación automática (health-check-complete.sh: todas las BDs + Reparación + Notificación)
-HEALTH_CHECK_ENABLED=false
-HEALTH_CHECK_SCHEDULE=0 3 * * *
+        if [ "$result" = "updated" ]; then
+            updated_count=$((updated_count + 1))
+        elif [ "$result" = "added" ]; then
+            added_count=$((added_count + 1))
+        fi
+    done
 
-# ═══════════════════════════════════════════════════════════════
-# CONFIGURACIÓN DEL SISTEMA DE MONITOREO ADN
-# ═══════════════════════════════════════════════════════════════
-# ⚠️ NOTA: Estos valores se configuran AUTOMÁTICAMENTE al iniciar el contenedor
-# mediante el auto-registro en el endpoint /api/database-servers/register
-#
-# Solo necesitas configurar MONITOR_API_URL. Los demás valores se obtienen
-# automáticamente cuando el contenedor se inicia.
-#
-# Si necesitas re-configurar manualmente:
-#   ./scripts/auto-configure.sh <host> <port>
-#
-# URL base del API del sistema de monitoreo
-#MONITOR_API_URL=https://qa.sm-api.apps-adn.com/api
-MONITOR_API_URL=http://localhost:4000/api
-# API Key del servidor (auto-configurado por entrypoint.sh)
-# Ejemplo: sk_live_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
-MONITOR_API_KEY=
-
-# UUID del servidor (auto-configurado por entrypoint.sh)
-# Ejemplo: 550e8400-e29b-41d4-a716-446655440000
-MONITOR_SERVER_ID=
-
-# ═══════════════════════════════════════════════════════════════
-# CONFIGURACIÓN DE DESPLIEGUE MASIVO (deploy-update.sh)
-# ═══════════════════════════════════════════════════════════════
-# Ruta donde están los contenedores MariaDB en el servidor
-MARIADB_CONTAINERS_PATH=/var/docker-data/mariadb
-
-# Ruta donde se guardarán los backups de contenedores
-BACKUP_PATH=/home/adn/backup/contenedores
-
-# ═══════════════════════════════════════════════════════════════
-# CONFIGURACIÓN WASABI S3 (Opcional - para upload de backups)
-# ═══════════════════════════════════════════════════════════════
-# Dejar en blanco si no se usará Wasabi S3
-WASABI_UPLOAD_ENABLED=false
-WASABI_ACCESS_KEY=0O4LJTDG9TF64N3NSQHD
-WASABI_SECRET_KEY=M5crOj5KtmKYOUUaW5Je2EnztVOW7gFNlYpFXjG7
-WASABI_BUCKET=adn-backups-bd
-WASABI_REGION=us-east-1
-WASABI_ENDPOINT=https://s3.wasabisys.com
-
-# ═══════════════════════════════════════════════════════════════
-# NOTA IMPORTANTE: IDs de Bases de Datos
-# ═══════════════════════════════════════════════════════════════
-# Los scripts de backup y health-check obtienen los IDs de las bases
-# de datos DINÁMICAMENTE desde el servidor de monitoreo en cada ejecución.
-# Ya NO es necesario mantener variables DBID_* en este archivo.
-#
-# Ventajas:
-# - Auto-detección de nuevas bases de datos
-# - No requiere reiniciar el contenedor al crear/eliminar BDs
-# - Siempre sincronizado con el servidor de monitoreo
-EOF
-    
-    success "  ✓ Configuración agregada a $container_name"
+    success "  ✓ Actualizadas: $updated_count, Agregadas: $added_count"
     return 0
 }
 
@@ -215,24 +268,27 @@ for container_dir in "$BASE_PATH"/*/; do
     if [ ! -d "$container_dir" ]; then
         continue
     fi
-    
+
     container_name=$(basename "$container_dir")
-    
+
     # Verificar si es un contenedor MariaDB válido
     if ! is_mariadb_container "$container_dir"; then
         warning "Saltando (no es contenedor MariaDB válido): $container_name"
         continue
     fi
-    
+
     total=$((total + 1))
-    
+
+    # Verificar si necesita actualización antes de procesar
+    env_file="$container_dir/.env"
+    if ! needs_update "$env_file"; then
+        saltados=$((saltados + 1))
+        continue
+    fi
+
     # Actualizar el .env
     if update_env "$container_dir"; then
-        if has_new_config "$container_dir/.env"; then
-            actualizados=$((actualizados + 1))
-        else
-            saltados=$((saltados + 1))
-        fi
+        actualizados=$((actualizados + 1))
     else
         errores=$((errores + 1))
     fi
@@ -246,7 +302,7 @@ log "═════════════════════════
 info "Total contenedores procesados: $total"
 success "Actualizados: $actualizados"
 if [ $saltados -gt 0 ]; then
-    warning "Saltados (ya tenían config): $saltados"
+    warning "Saltados (ya actualizados): $saltados"
 fi
 if [ $errores -gt 0 ]; then
     error "Errores: $errores"
