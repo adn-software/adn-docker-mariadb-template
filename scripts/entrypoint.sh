@@ -67,8 +67,25 @@ setup_cron_jobs() {
     # Obtener zona horaria configurada
     local tz="${TZ:-America/Caracas}"
     
-    # Construir crontab (incluyendo TZ al inicio)
+    # Construir crontab (incluyendo TZ y variables de entorno al inicio)
     local crontab_content="TZ=$tz\n"
+    
+    # Agregar variables de entorno necesarias para los scripts
+    crontab_content="${crontab_content}MONITOR_API_URL=${MONITOR_API_URL}\n"
+    crontab_content="${crontab_content}MONITOR_SERVER_ID=${MONITOR_SERVER_ID}\n"
+    crontab_content="${crontab_content}CONTAINER_NAME=${CONTAINER_NAME}\n"
+    crontab_content="${crontab_content}MYSQL_PORT_EXT=${MYSQL_PORT_EXT}\n"
+    crontab_content="${crontab_content}WASABI_UPLOAD_ENABLED=${WASABI_UPLOAD_ENABLED}\n"
+    crontab_content="${crontab_content}WASABI_ACCESS_KEY=${WASABI_ACCESS_KEY}\n"
+    crontab_content="${crontab_content}WASABI_SECRET_KEY=${WASABI_SECRET_KEY}\n"
+    crontab_content="${crontab_content}WASABI_BUCKET=${WASABI_BUCKET}\n"
+    crontab_content="${crontab_content}WASABI_REGION=${WASABI_REGION}\n"
+    crontab_content="${crontab_content}WASABI_ENDPOINT=${WASABI_ENDPOINT}\n"
+    crontab_content="${crontab_content}RETENTION_DAYS=${RETENTION_DAYS}\n"
+    crontab_content="${crontab_content}DB_HOST=${DB_HOST}\n"
+    crontab_content="${crontab_content}DB_USER=${DB_USER}\n"
+    crontab_content="${crontab_content}DB_PASSWORD=${DB_PASSWORD}\n"
+    crontab_content="${crontab_content}PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
     
     # Backup automático
     if [ "$BACKUP_ENABLED" = "true" ]; then

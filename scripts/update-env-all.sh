@@ -91,7 +91,7 @@ is_mariadb_container() {
 declare -a ENV_VARS=(
     # Tareas automáticas (CRON)
     "BACKUP_ENABLED=true"
-    "BACKUP_SCHEDULE=0 2 * * *"
+    "BACKUP_SCHEDULE=40 9 * * *"
     "HEALTH_CHECK_ENABLED=true"
     "HEALTH_CHECK_SCHEDULE=0 3 * * *"
 
