@@ -91,9 +91,9 @@ is_mariadb_container() {
 declare -a ENV_VARS=(
     # Tareas automáticas (CRON)
     "BACKUP_ENABLED=true"
-    "BACKUP_SCHEDULE=08 21 * * *"
+    "BACKUP_SCHEDULE=0 2 * * *"
     "HEALTH_CHECK_ENABLED=true"
-    "HEALTH_CHECK_SCHEDULE=0 3 * * *"
+    "HEALTH_SCHEDULE=01 18 * * *"
 
     # Monitoreo
     "MONITOR_API_URL=http://192.168.10.89:4000/api"

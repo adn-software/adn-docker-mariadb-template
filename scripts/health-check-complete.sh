@@ -9,13 +9,20 @@
 
 # NO usamos set -e porque queremos que continúe con todas las BDs aunque una falle
 
+# Cargar variables de entorno si existen (para cron)
+if [ -f /etc/cron.d/adn-backup-env ]; then
+    set -a
+    source /etc/cron.d/adn-backup-env
+    set +a
+fi
+
 # ============================================
 # CONFIGURACIÓN
 # ============================================
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-3306}"
 DB_USER="${DB_USER:-root}"
-DB_PASSWORD="${DB_PASSWORD:-${MYSQL_ROOT_PASSWORD}}"
+DB_PASSWORD="${DB_PASSWORD:-${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD}}}"
 
 # Configuración del sistema de monitoreo
 MONITOR_API_URL="${MONITOR_API_URL}"
@@ -88,43 +95,67 @@ declare -A DATABASE_IDS_CACHE
 
 # Cargar database IDs desde el endpoint
 load_database_ids() {
+    info "=== INICIANDO CARGA DE DATABASE IDs ==="
+    info "MONITOR_API_URL: '${MONITOR_API_URL}'"
+    info "MONITOR_SERVER_ID: '${MONITOR_SERVER_ID}'"
+    
     if [ -z "$MONITOR_API_URL" ] || [ -z "$MONITOR_SERVER_ID" ]; then
         warning "Sistema de monitoreo no configurado completamente"
         return 1
     fi
     
+    # Verificar si jq está instalado
+    if ! command -v jq &> /dev/null; then
+        warning "jq no está instalado, no se pueden cargar IDs de bases de datos"
+        return 1
+    fi
+    
     info "Obteniendo IDs de bases de datos desde el servidor..."
     
-    # Obtener host y puerto del servidor
-    local host=$(hostname -i | awk '{print $1}')
-    local port="${MYSQL_PORT:-3306}"
-    
-    local response=$(curl -s -X POST "${MONITOR_API_URL}/database-servers/get-config" \
-        -H "Content-Type: application/json" \
-        -d "{\"host\":\"${host}\",\"port\":${port}}" \
-        --max-time 10 2>&1)
+    # Intentar obtener la configuración por serverId si está disponible
+    if [ -n "$MONITOR_SERVER_ID" ]; then
+        info "Consultando: ${MONITOR_API_URL}/database-servers/${MONITOR_SERVER_ID}"
+        local response=$(curl -s -X GET "${MONITOR_API_URL}/database-servers/${MONITOR_SERVER_ID}" \
+            --max-time 10 2>&1)
+        info "Response status: $?"
+    else
+        warning "MONITOR_SERVER_ID no configurado, no se pueden cargar IDs de bases de datos"
+        return 1
+    fi
     
     if [ $? -eq 0 ]; then
         # Parsear respuesta y llenar cache
+        # El endpoint devuelve { id, name, ..., databases: [...] }
         local db_count=$(echo "$response" | jq -r '.databases | length' 2>/dev/null)
+        info "db_count parseado: '$db_count'"
+        
+        # Validar que db_count es un número
+        if [[ ! "$db_count" =~ ^[0-9]+$ ]]; then
+            warning "Respuesta del servidor no válida (db_count no es un número): $db_count"
+            return 1
+        fi
         
         if [ "$db_count" -gt 0 ]; then
             for i in $(seq 0 $((db_count - 1))); do
-                local db_name=$(echo "$response" | jq -r ".databases[$i].name" 2>/dev/null)
+                local db_name=$(echo "$response" | jq -r ".databases[$i].databaseName" 2>/dev/null)
                 local db_id=$(echo "$response" | jq -r ".databases[$i].id" 2>/dev/null)
                 
-                if [ -n "$db_name" ] && [ "$db_name" != "null" ]; then
+                if [ -n "$db_name" ] && [ "$db_name" != "null" ] && [ -n "$db_id" ] && [ "$db_id" != "null" ]; then
                     DATABASE_IDS_CACHE["$db_name"]="$db_id"
+                    info "  - $db_name -> $db_id"
                 fi
             done
             
             info "✓ Cargados ${db_count} IDs de bases de datos"
             return 0
+        else
+            info "No se encontraron bases de datos en el servidor"
+            return 0
         fi
+    else
+        warning "Error al conectar con el servidor de monitoreo"
+        return 1
     fi
-    
-    warning "No se pudieron cargar los IDs de bases de datos desde el servidor"
-    return 1
 }
 
 # Obtener databaseId para una base de datos específica
@@ -156,8 +187,8 @@ get_database_id() {
 send_notification() {
     local payload="$1"
     
-    if [ -z "$MONITOR_API_URL" ] || [ -z "$MONITOR_API_KEY" ]; then
-        warning "Sistema de monitoreo no configurado"
+    if [ -z "$MONITOR_API_URL" ]; then
+        warning "Sistema de monitoreo no configurado (MONITOR_API_URL faltante)"
         return 0
     fi
     
@@ -166,13 +197,25 @@ send_notification() {
     local response
     local http_code
     
-    response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/health-logs" \
-        -H "Content-Type: application/json" \
-        -H "X-API-Key: ${MONITOR_API_KEY}" \
-        -d "$payload" \
-        --max-time 30 \
-        --retry 3 \
-        --retry-delay 5 2>&1)
+    # Construir comando curl con headers correctos
+    if [ -n "$MONITOR_API_KEY" ]; then
+        response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/health-logs" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${MONITOR_API_KEY}" \
+            -d "$payload" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 10 2>&1)
+    else
+        response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/health-logs" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 10 2>&1)
+    fi
     
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
@@ -180,9 +223,13 @@ send_notification() {
     if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
         log "✓ Notificación enviada exitosamente (HTTP $http_code)"
         return 0
+    elif [ "$http_code" = "000" ]; then
+        warning "⚠ No se pudo conectar al sistema de monitoreo (posible problema de red)"
+        return 0  # No fallar el proceso por error de conexión
     else
-        error "✗ Error al enviar notificación (HTTP $http_code)"
-        return 1
+        warning "⚠ Error al enviar notificación (HTTP $http_code)"
+        warning "Response: $body"
+        return 0  # No fallar el proceso por error de notificación
     fi
 }
 
@@ -235,28 +282,28 @@ verify_and_repair_table() {
     # Incrementar contador
     db_tables_checked=$((db_tables_checked + 1))
     
-    info "  Verificando tabla: ${table_name}"
+    echo "[INFO]   Verificando tabla: ${table_name}" >&2
     
     local check_result=$(check_table "$db_name" "$table_name")
     local status=$(echo "$check_result" | awk -F'\t' '{print $4}')
     local msg_type=$(echo "$check_result" | awk -F'\t' '{print $3}')
     
     if [[ "$status" == "OK" ]] && [[ "$msg_type" != "Error" ]]; then
-        echo -e "    ${GREEN}✓${NC} OK"
+        echo -e "    ${GREEN}✓${NC} OK" >&2
         db_tables_ok=$((db_tables_ok + 1))
     else
-        warning "    ⚠ Necesita reparación: $status"
+        echo "[WARNING]     ⚠ Necesita reparación: $status" >&2
         
         # Intentar reparar
-        info "    Reparando..."
+        echo "[INFO]     Reparando..." >&2
         local repair_result=$(repair_table "$db_name" "$table_name")
         local repair_status=$(echo "$repair_result" | awk -F'\t' '{print $4}')
         
         if [[ "$repair_status" == "OK" ]] || [[ "$repair_status" == *"repaired"* ]]; then
-            log "    ✅ Reparada exitosamente"
+            echo "[INFO]     ✅ Reparada exitosamente" >&2
             db_tables_repaired=$((db_tables_repaired + 1))
         else
-            error "    ❌ No se pudo reparar: $repair_status"
+            echo "[ERROR]     ❌ No se pudo reparar: $repair_status" >&2
             db_tables_failed=$((db_tables_failed + 1))
             # Agregar a issues
             local table_escaped=$(echo "$table_name" | sed 's/"/\\"/g')
@@ -316,7 +363,10 @@ EOF
     
     # Obtener tablas
     local tables=$(get_tables "$db_name")
-    local table_count=$(echo "$tables" | wc -l)
+    local table_count=0
+    if [ -n "$tables" ]; then
+        table_count=$(echo "$tables" | wc -l)
+    fi
     info "Encontradas $table_count tablas"
     
     # Inicializar contadores
@@ -341,9 +391,9 @@ EOF
     
     # Determinar estado
     local overall_status
-    if [ $tables_failed -gt 0 ]; then
+    if [ "${tables_failed:-0}" -gt 0 ]; then
         overall_status="critical"
-    elif [ $tables_repaired -gt 0 ]; then
+    elif [ "${tables_repaired:-0}" -gt 0 ]; then
         overall_status="warning"
     else
         overall_status="healthy"
@@ -360,6 +410,14 @@ EOF
     local hostname=$(hostname)
     local mariadb_version=$(mysql -V | awk '{print $5}' | sed 's/,//')
     
+    info "Preparando notificación para '$db_name':"
+    info "  database_id: '${database_id}'"
+    info "  MONITOR_SERVER_ID: '${MONITOR_SERVER_ID}'"
+    info "  tables_checked: '${tables_checked}'"
+    info "  tables_ok: '${tables_ok}'"
+    info "  tables_repaired: '${tables_repaired}'"
+    info "  tables_failed: '${tables_failed}'"
+    
     # Preparar payload
     local payload=$(cat <<EOF
 {
@@ -367,14 +425,14 @@ EOF
   "serverId": "${MONITOR_SERVER_ID}",
   "status": "${overall_status}",
   "checkedAt": "${start_time}",
-  "duration": ${duration},
-  "tablesChecked": ${tables_checked},
-  "tablesOk": ${tables_ok},
+  "duration": ${duration:-0},
+  "tablesChecked": ${tables_checked:-0},
+  "tablesOk": ${tables_ok:-0},
   "tablesWithWarnings": 0,
-  "tablesWithErrors": ${tables_failed},
-  "tablesRepaired": ${tables_repaired},
+  "tablesWithErrors": ${tables_failed:-0},
+  "tablesRepaired": ${tables_repaired:-0},
   "issues": ${issues_json},
-  "connectionTime": ${connection_time},
+  "connectionTime": ${connection_time:-0},
   "queryTime": 0,
   "source": "container",
   "metadata": {
@@ -387,20 +445,28 @@ EOF
 )
     
     # Enviar notificación
-    send_notification "$payload"
+    local notification_sent=false
+    if [ -n "$database_id" ] && [ -n "$MONITOR_SERVER_ID" ]; then
+        if send_notification "$payload"; then
+            notification_sent=true
+        fi
+    else
+        warning "⚠ No se envió notificación (databaseId o serverId no configurados)"
+    fi
     
     # Resumen de la BD
-    log "Resumen de ${db_name}:"
-    log "  Tablas verificadas: $tables_checked"
-    log "  ✓ OK: $tables_ok"
-    if [ $tables_repaired -gt 0 ]; then
+    log "✓ Health check de '$db_name' completado"
+    log "  Tablas verificadas: ${tables_checked:-0}"
+    log "  ✓ OK: ${tables_ok:-0}"
+    if [ "${tables_repaired:-0}" -gt 0 ]; then
         warning "  ⚠ Reparadas: $tables_repaired"
     fi
-    if [ $tables_failed -gt 0 ]; then
+    if [ "${tables_failed:-0}" -gt 0 ]; then
         error "  ✗ Fallidas: $tables_failed"
     fi
     log "  Estado: ${overall_status}"
     log "  Duración: ${duration}ms"
+    [ "$notification_sent" = true ] && log "  ✓ Notificación enviada" || warning "  ⚠ No se envió notificación"
     
     return $tables_failed
 }
