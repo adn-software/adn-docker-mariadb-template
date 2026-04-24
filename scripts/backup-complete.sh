@@ -9,6 +9,20 @@
 
 # NO usamos set -e porque queremos que continúe con todas las BDs aunque una falle
 
+# Cargar variables de entorno si existen (para cron)
+if [ -f /etc/cron.d/adn-backup-env ]; then
+    set -a
+    source /etc/cron.d/adn-backup-env
+    set +a
+    # Log de diagnóstico (solo si se ejecuta desde cron)
+    if [ -z "$TERM" ]; then
+        echo "[DEBUG] Variables cargadas desde /etc/cron.d/adn-backup-env" >&2
+        echo "[DEBUG] PATH=$PATH" >&2
+        echo "[DEBUG] MONITOR_API_URL=$MONITOR_API_URL" >&2
+        echo "[DEBUG] WASABI_ENDPOINT=$WASABI_ENDPOINT" >&2
+    fi
+fi
+
 # ============================================
 # CONFIGURACIÓN
 # ============================================
@@ -16,9 +30,9 @@ BACKUP_DIR="${BACKUP_DIR:-/backups}"
 DATE=$(date +%Y%m%d_%H%M%S)
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 
-# Credenciales MariaDB
-DB_USER="root"
-DB_PASSWORD="${MYSQL_ROOT_PASSWORD}"
+# Credenciales MariaDB - Intentar múltiples fuentes
+DB_USER="${DB_USER:-root}"
+DB_PASSWORD="${DB_PASSWORD:-${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD}}}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-3306}"
 
@@ -302,8 +316,8 @@ EOF
 send_notification() {
     local payload="$1"
     
-    if [ -z "$MONITOR_API_URL" ] || [ -z "$MONITOR_API_KEY" ]; then
-        warning "Sistema de monitoreo no configurado (MONITOR_API_URL o MONITOR_API_KEY faltantes)"
+    if [ -z "$MONITOR_API_URL" ]; then
+        warning "Sistema de monitoreo no configurado (MONITOR_API_URL faltante)"
         return 0
     fi
     
@@ -312,14 +326,25 @@ send_notification() {
     local response
     local http_code
     
-    response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/backup-logs" \
-        -H "Content-Type: application/json" \
-        -H "X-API-Key: ${MONITOR_API_KEY}" \
-        -d "$payload" \
-        --max-time 30 \
-        --retry 3 \
-        --retry-delay 5 \
-        --connect-timeout 10 2>&1)
+    # Construir comando curl con headers correctos
+    if [ -n "$MONITOR_API_KEY" ]; then
+        response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/backup-logs" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${MONITOR_API_KEY}" \
+            -d "$payload" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 10 2>&1)
+    else
+        response=$(curl -s -w "\n%{http_code}" -X POST "${MONITOR_API_URL}/backup-logs" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 10 2>&1)
+    fi
     
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
@@ -351,7 +376,9 @@ backup_database() {
     log "INICIANDO BACKUP: $db_name"
     log "════════════════════════════════════════════════"
     
-    local backup_file="$BACKUP_DIR/backup_${db_name}_${DATE}.sql"
+    # Generar timestamp único para este backup específico
+    local backup_timestamp=$(date +%Y%m%d_%H%M%S)
+    local backup_file="$BACKUP_DIR/backup_${db_name}_${backup_timestamp}.sql"
     local wasabi_uploaded=false
     local wasabi_error=""
     local notification_sent=false
@@ -371,13 +398,26 @@ backup_database() {
         
         # Backup exitoso - comprimir
         local uncompressed_size=$(stat -c%s "$backup_file" 2>/dev/null || stat -f%z "$backup_file" 2>/dev/null)
-        gzip "$backup_file"
         local backup_file_gz="${backup_file}.gz"
+        
+        # Eliminar archivo .gz existente si existe para evitar conflictos
+        rm -f "$backup_file_gz"
+        
+        # Asegurar que todos los datos estén escritos en disco
+        sync
+        sleep 0.5
+        
+        # Comprimir el archivo
+        gzip "$backup_file"
+        
         local compressed_size=$(stat -c%s "$backup_file_gz" 2>/dev/null || stat -f%z "$backup_file_gz" 2>/dev/null)
         # Usar awk en lugar de bc para calcular tamaño en MB
         local compressed_size_mb=$(awk "BEGIN {printf \"%.2f\", $compressed_size / 1024 / 1024}")
         # Usar awk en lugar de bc para calcular ratio de compresión
-        local compression_ratio=$(awk "BEGIN {printf \"%.4f\", $compressed_size / $uncompressed_size}")
+        local compression_ratio=0
+        if [ -n "$uncompressed_size" ] && [ "$uncompressed_size" -gt 0 ]; then
+            compression_ratio=$(awk "BEGIN {printf \"%.4f\", $compressed_size / $uncompressed_size}")
+        fi
         
         local end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         local end_timestamp=$(date +%s)
@@ -521,7 +561,7 @@ main() {
     log "═══════════════════════════════════════════════════════════════"
     log "Inicio: $(date)"
     log "Directorio: $BACKUP_DIR"
-    log "Retención local: $RETENTION_Días días"
+    log "Retención local: $RETENTION_DAYS días"
     log "Wasabi S3: $([ "$WASABI_UPLOAD_ENABLED" = "true" ] && echo "Habilitado" || echo "Deshabilitado")"
     log "Notificaciones: $([ -n "$MONITOR_API_URL" ] && echo "Habilitado" || echo "Deshabilitado")"
     log "═══════════════════════════════════════════════════════════════"
