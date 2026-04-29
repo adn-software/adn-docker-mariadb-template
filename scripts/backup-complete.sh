@@ -385,6 +385,7 @@ backup_database() {
     local notification_error=""
     
     # Ejecutar mysqldump
+    local dump_error=$(mktemp)
     if mysqldump \
         -h "$DB_HOST" \
         -P "$DB_PORT" \
@@ -394,7 +395,20 @@ backup_database() {
         --routines \
         --triggers \
         --events \
-        "$db_name" > "$backup_file" 2>/dev/null; then
+        "$db_name" > "$backup_file" 2>"$dump_error"; then
+        
+        # Verificar que el archivo se creó y tiene contenido
+        if [ ! -f "$backup_file" ]; then
+            error "El archivo de backup no se creó: $backup_file"
+            rm -f "$dump_error"
+            return 1
+        fi
+        
+        if [ ! -s "$backup_file" ]; then
+            error "El archivo de backup está vacío: $backup_file"
+            rm -f "$backup_file" "$dump_error"
+            return 1
+        fi
         
         # Backup exitoso - comprimir
         local uncompressed_size=$(stat -c%s "$backup_file" 2>/dev/null || stat -f%z "$backup_file" 2>/dev/null)
@@ -408,7 +422,13 @@ backup_database() {
         sleep 0.5
         
         # Comprimir el archivo
-        gzip "$backup_file"
+        if ! gzip "$backup_file"; then
+            error "Falló la compresión del archivo: $backup_file"
+            rm -f "$dump_error"
+            return 1
+        fi
+        
+        rm -f "$dump_error"
         
         local compressed_size=$(stat -c%s "$backup_file_gz" 2>/dev/null || stat -f%z "$backup_file_gz" 2>/dev/null)
         # Usar awk en lugar de bc para calcular tamaño en MB
@@ -495,12 +515,12 @@ EOF
         local end_timestamp=$(date +%s)
         local duration=$((end_timestamp - start_timestamp))
         
-        local error_msg=$(mysqldump \
-            -h "$DB_HOST" \
-            -P "$DB_PORT" \
-            -u "$DB_USER" \
-            -p"${DB_PASSWORD}" \
-            "$db_name" 2>&1 | tail -5)
+        # Leer el error capturado
+        local error_msg=""
+        if [ -f "$dump_error" ]; then
+            error_msg=$(cat "$dump_error" | tail -5)
+            rm -f "$dump_error"
+        fi
         
         error "✗ Falló el backup de '$db_name'"
         error "Error: $error_msg"

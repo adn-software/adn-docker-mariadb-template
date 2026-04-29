@@ -91,18 +91,18 @@ is_mariadb_container() {
 declare -a ENV_VARS=(
     # Tareas automáticas (CRON)
     "BACKUP_ENABLED=true"
-    "BACKUP_SCHEDULE=0 2 * * *"
+    "BACKUP_SCHEDULE=20 6 * * *"
     "HEALTH_CHECK_ENABLED=true"
-    "HEALTH_SCHEDULE=01 18 * * *"
+    "HEALTH_SCHEDULE=23 6 * * *"
 
     # Monitoreo
-    "MONITOR_API_URL=http://192.168.10.89:4000/api"
+    "MONITOR_API_URL=https://sm-api.apps-adn.com/api"
     "MONITOR_API_KEY="
     "MONITOR_SERVER_ID="
 
     # Despliegue masivo
-    "MARIADB_CONTAINERS_PATH=/home/aleguizamon/ADN/adn-servers-manager/docker-mariadb-tests"
-    "BACKUP_PATH=/home/aleguizamon/ADN/adn-servers-manager/backups"
+    "MARIADB_CONTAINERS_PATH=/var/docker-data/mariadb"
+    "BACKUP_PATH=/home/adn/backups"
 
     # Wasabi S3
     "WASABI_UPLOAD_ENABLED=true"
