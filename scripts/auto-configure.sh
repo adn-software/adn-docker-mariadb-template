@@ -57,8 +57,7 @@ fi
 
 HOST="$1"
 PORT="$2"
-# API_URL="${3:-https://qa.sm-api.apps-adn.com/api}"
-API_URL="http://localhost:4000/api"
+API_URL="${3:-https://sm-api.apps-adn.com/api}"
 ENV_FILE=".env"
 
 log "Iniciando auto-configuración..."
